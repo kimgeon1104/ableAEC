@@ -27,10 +27,10 @@ ctest --test-dir build --output-on-failure
 
 ## Windows
 
-Visual Studio 2022 (C++ 데스크톱 개발 워크로드) 필요.
+Visual Studio 2022 이상 (C++ 데스크톱 개발 워크로드) 필요.
 
 ```powershell
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+cmake -S . -B build -A x64   # 설치된 최신 Visual Studio를 자동 선택
 cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
