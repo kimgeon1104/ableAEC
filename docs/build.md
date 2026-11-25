@@ -78,19 +78,26 @@ xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/AbleAEC.compo
 | 테스트 | 내용 |
 | --- | --- |
 | `aec_sim_test` | 합성 음성 + 가상 방 응답으로 AEC 코어 검증: 단일 발화 ERLE, 더블토크 시 근단 음성 보존, 에코 경로 변화 후 재수렴, 지연 추정, 참조 없을 때 투명성 |
-| `plugin_host_test` | 빌드된 VST3를 DAW처럼 로드 → 사이드체인 버스 활성화, 보고된 지연과 실제 출력 정렬 일치, 플러그인 경유 에코 제거, 사이드체인 없을 때 통과 동작 |
+| `plugin_host_test` | 빌드된 VST3를 DAW처럼 로드 → 사이드체인 버스 활성화, 두 Latency 모드의 보고 지연과 실제 출력 정렬 일치, L≠R 스테레오 사이드체인에서 플러그인 경유 에코 제거 (스테레오 vs 모노 참조 비교), 사이드체인 없을 때 통과 동작 |
+| `tests/realistic/run_realistic.py` | TTS 보컬 + 합성 스테레오 반주 + 가상 방(이미지 소스)으로 4개 시나리오 측정. CI(Linux)에서 `--check` 로 회귀 기준치 검사. 자세한 내용: [[realistic-test]] |
 
 Linux에서 측정한 결과 예시:
 
 ```
-[LinearOnly] ERLE single-talk 23.8 dB, after path change 24.9 dB, double-talk SER -5.1 → 20.2 dB, delay 35.0 ms (true 35.0)
-[Clean]      ERLE single-talk 41.2 dB, after path change 43.8 dB
-plugin_host_test: latency 512 samples, ERLE through plugin 74.3 dB
+aec_sim_test      [LinearOnly] ERLE single-talk 23.3 dB, after path change 24.3 dB, double-talk SER -5.1 → 18.4 dB, delay 35.0 ms (true 35.0)
+                  [Clean]      ERLE single-talk 38.1 dB, after path change 41.0 dB
+plugin_host_test  latency Quality 1024 / Low 512 samples, ERLE stereo reference 64.1 dB vs mono sum 6.2 dB
+realistic         stereo speakers: ERLE after singing 20.9 dB (linear) / 27.2 dB (clean), vocal SER 5.9 → 19.2 dB
 ```
 
-CPU 사용량 (48 kHz, 채널당, 단일 코어 기준): 필터 200 ms ≈ 2.3 %, 500 ms ≈ 6.7 %.
+CPU 사용량은 [[dsp-design#CPU (48 kHz, 마이크 채널당, 단일 코어)|DSP 설계]] 참고 (기본 설정 채널당 약 4.4 %).
+
+### 오프라인 WAV 처리 도구
+
+`aec_wav` 는 플러그인과 같은 알고리즘으로 WAV 파일을 처리합니다. 사용법은 [[realistic-test#내 녹음으로 확인하기 (`aec_wav`)|실환경 테스트 문서]] 참고.
 
 ## 관련 문서
 
 - [[AbleAEC-MOC|문서 목차]]
 - [[dsp-design|DSP 설계]]
+- [[realistic-test|보컬 + 반주 실환경 시뮬레이션 테스트]]

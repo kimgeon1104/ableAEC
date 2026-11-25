@@ -27,14 +27,21 @@ AbleAecEditor::AbleAecEditor (AbleAecProcessor& p) : AudioProcessorEditor (&p), 
     freezeAtt = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "freeze", freezeButton);
     offAtt = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "aecOff", offButton);
 
-    modeBox.addItemList (proc.apvts.getParameter ("mode")->getAllValueStrings(), 1);
-    addAndMakeVisible (modeBox);
-    modeAtt = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (proc.apvts, "mode", modeBox);
+    auto setupBox = [this] (juce::ComboBox& box, const juce::String& paramId,
+                            std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment>& att)
+    {
+        box.addItemList (proc.apvts.getParameter (paramId)->getAllValueStrings(), 1);
+        addAndMakeVisible (box);
+        att = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (proc.apvts, paramId, box);
+    };
+    setupBox (modeBox, "mode", modeAtt);
+    setupBox (latencyBox, "latency", latencyAtt);
+    setupBox (refModeBox, "refMode", refModeAtt);
 
     resetButton.onClick = [this] { proc.requestReset(); };
     addAndMakeVisible (resetButton);
 
-    setSize (620, 330);
+    setSize (640, 390);
     startTimerHz (15);
 }
 
@@ -63,6 +70,8 @@ void AbleAecEditor::timerCallback()
     outDb = m.outLevelDb.load();
     converged = m.converged.load();
     sidechain = m.sidechainConnected.load();
+    refChannels = m.refChannels.load();
+    latencySamples = m.latencySamples.load();
     repaint (meterArea);
     repaint (statusArea);
 }
@@ -124,12 +133,14 @@ void AbleAecEditor::paint (juce::Graphics& g)
     else if (! refPresent)
         line ("Sidechain", "connected, no signal", kText);
     else
-        line ("Sidechain", "receiving", kGood);
+        line ("Sidechain", refChannels == 2 ? "receiving (stereo)" : "receiving (mono)", kGood);
 
     line ("Echo reduction", juce::String (erle, 1) + " dB", converged ? kGood : kText);
     line ("Echo delay", delayMs > 0.0f ? juce::String (delayMs, 1) + " ms" : juce::String ("-"), kText);
     line ("State", converged ? "converged" : (refPresent ? "learning..." : "waiting for speaker signal"),
           converged ? kGood : kText);
+    const double sr = proc.getSampleRate() > 0.0 ? proc.getSampleRate() : 48000.0;
+    line ("Latency", juce::String (latencySamples) + " smp (" + juce::String (latencySamples * 1000.0 / sr, 1) + " ms)", kText);
 }
 
 void AbleAecEditor::resized()
@@ -150,9 +161,14 @@ void AbleAecEditor::resized()
     auto controls = r.removeFromTop (28);
     modeBox.setBounds (controls.removeFromLeft (170));
     controls.removeFromLeft (10);
-    freezeButton.setBounds (controls.removeFromLeft (90));
-    offButton.setBounds (controls.removeFromLeft (90));
-    resetButton.setBounds (controls.removeFromRight (110));
+    latencyBox.setBounds (controls.removeFromLeft (150));
+    controls.removeFromLeft (10);
+    refModeBox.setBounds (controls.removeFromLeft (130));
+    r.removeFromTop (6);
+    auto controls2 = r.removeFromTop (26);
+    freezeButton.setBounds (controls2.removeFromLeft (90));
+    offButton.setBounds (controls2.removeFromLeft (90));
+    resetButton.setBounds (controls2.removeFromRight (110));
 
     r.removeFromTop (10);
     meterArea = r.removeFromLeft (r.getWidth() / 2 - 5);

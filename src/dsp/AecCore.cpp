@@ -1,8 +1,8 @@
 #include "AecCore.h"
 
 #include <algorithm>
-#include <cstddef>
 #include <cmath>
+#include <cstddef>
 
 namespace ableaec
 {
@@ -11,6 +11,14 @@ namespace
 constexpr float kRefActiveThreshold = 1.0e-8f; // mean square, ~ -80 dBFS
 constexpr float kMinLeak = 0.005f;
 constexpr float kEps = 1.0e-10f;
+
+// Kalman filter tuning
+constexpr float kKalmanA = 0.999f;   // state transition (echo-path drift)
+constexpr float kKalmanQ = 1.0e-8f;  // process-noise floor (keeps the filter able to track)
+constexpr float kKalmanP0 = 1.0f;    // initial state uncertainty
+constexpr float kPsiScale = 2.0f;    // N/B: |E|^2 of a B-sample error vs |X|^2 of an N-sample frame
+constexpr float kPathChangeLeak = 0.5f; // leakage above which the echo path is assumed to have changed
+constexpr float kPathChangeInflate = 1.5f; // per-block growth of the state uncertainty after a path change
 
 template <typename T>
 void zero (std::vector<T>& v) { std::fill (v.begin(), v.end(), T {}); }
@@ -23,32 +31,44 @@ float energy (const float* x, int n) noexcept
 }
 } // namespace
 
-void AecCore::prepare (double sampleRate, float maxFilterLengthMs)
+int AecCore::blockSizeFor (double sampleRate, bool lowLatency) noexcept
+{
+    // 256 / 512 samples at 44.1-48 kHz, scaled so the block keeps the same duration
+    const double target = (lowLatency ? 256.0 : 512.0) * sampleRate / 48000.0;
+    int b = 64;
+    while (b * 2 <= (int) (target * 1.25)) b *= 2;
+    return b;
+}
+
+void AecCore::prepare (double sampleRate, float maxFilterLengthMs, int blockSize, int numRefs)
 {
     sr = sampleRate > 0.0 ? sampleRate : 48000.0;
+    B = std::max (64, blockSize);
+    N = 2 * B;
+    K = N / 2 + 1;
+    C = std::clamp (numRefs, 1, kMaxRefs);
+    Ca = C;
     Pmax = std::max (1, (int) std::ceil (maxFilterLengthMs * 0.001 * sr / B));
 
     fft.prepare (N);
-    X.assign ((size_t) Pmax * K, cpx {});
-    Wfg.assign ((size_t) Pmax * K, cpx {});
-    Wbg.assign ((size_t) Pmax * K, cpx {});
-    refPrev.assign (B, 0.0f);
-    frame.assign (N, 0.0f);
-    for (auto* v : { &yF, &yB, &eF, &eB }) v->assign (B, 0.0f);
-    for (auto* v : { &acc, &EF, &EB, &YF }) v->assign (K, cpx {});
-    for (auto* v : { &psum, &psumSlow, &stepK, &meanE, &meanY }) v->assign (K, 0.0f);
+    const size_t wsize = (size_t) C * (size_t) Pmax * (size_t) K;
+    X.assign (wsize, cpx {});
+    Wfg.assign (wsize, cpx {});
+    Wbg.assign (wsize, cpx {});
+    Pcov.assign (wsize, kKalmanP0);
+    refPrev.assign ((size_t) C * (size_t) B, 0.0f);
+    frame.assign ((size_t) N, 0.0f);
+    for (auto* v : { &yF, &yB, &eF, &eB, &micCopy, &scratch, &prevMic, &prevY }) v->assign ((size_t) B, 0.0f);
+    for (auto* v : { &acc, &EF, &EB, &YF, &RE, &RY }) v->assign ((size_t) K, cpx {});
+    for (auto* v : { &kalDen, &psiS, &meanE, &meanY }) v->assign ((size_t) K, 0.0f);
 
-    window.resize (N);
+    window.resize ((size_t) N);
     for (int i = 0; i < N; ++i) // periodic sqrt-Hann -> perfect reconstruction at 50 % overlap
         window[(size_t) i] = (float) std::sqrt (0.5 - 0.5 * std::cos (2.0 * 3.14159265358979323846 * i / N));
-    resE.assign (N, 0.0f);
-    resY.assign (N, 0.0f);
-    ola.assign (N, 0.0f);
-    prevMic.assign (B, 0.0f);
-    prevY.assign (B, 0.0f);
-    RE.assign (K, cpx {});
-    RY.assign (K, cpx {});
-    gain.assign (K, 1.0f);
+    resE.assign ((size_t) N, 0.0f);
+    resY.assign ((size_t) N, 0.0f);
+    ola.assign ((size_t) N, 0.0f);
+    gain.assign ((size_t) K, 1.0f);
 
     P = 1;
     setSettings (settings);
@@ -58,7 +78,6 @@ void AecCore::prepare (double sampleRate, float maxFilterLengthMs)
 void AecCore::reset()
 {
     zero (X);
-    zero (psumSlow);
     zero (refPrev);
     zero (resE);
     zero (resY);
@@ -74,6 +93,8 @@ void AecCore::resetFilter() noexcept
 {
     zero (Wfg);
     zero (Wbg);
+    std::fill (Pcov.begin(), Pcov.end(), kKalmanP0);
+    zero (psiS);
     zero (meanE);
     zero (meanY);
     pey = 0.0;
@@ -86,16 +107,28 @@ void AecCore::resetFilter() noexcept
     echoDelayMs = 0.0f;
 }
 
+void AecCore::setActiveRefs (int n) noexcept
+{
+    n = std::clamp (n, 1, C);
+    if (n == Ca) return;
+    Ca = n;
+    zero (X);
+    zero (refPrev);
+    resetFilter();
+}
+
 void AecCore::setSettings (const AecSettings& s) noexcept
 {
     settings = s;
     const int newP = std::clamp ((int) std::ceil (s.filterLengthMs * 0.001 * sr / B), 1, Pmax);
     if (newP < P) // discard taps that are no longer used
-        for (int p = newP; p < P; ++p)
-        {
-            std::fill (Wf (p), Wf (p) + K, cpx {});
-            std::fill (Wb (p), Wb (p) + K, cpx {});
-        }
+        for (int c = 0; c < C; ++c)
+            for (int p = newP; p < P; ++p)
+            {
+                std::fill (Wf (c, p), Wf (c, p) + K, cpx {});
+                std::fill (Wb (c, p), Wb (c, p) + K, cpx {});
+                std::fill (Pc (c, p), Pc (c, p) + K, kKalmanP0);
+            }
     P = newP;
     constrainIdx %= P;
 }
@@ -103,35 +136,35 @@ void AecCore::setSettings (const AecSettings& s) noexcept
 void AecCore::filter (std::vector<cpx>& W, float* yOut) noexcept
 {
     std::fill (acc.begin(), acc.end(), cpx {});
-    for (int p = 0; p < P; ++p)
-    {
-        const cpx* x = Xp (p);
-        const cpx* w = W.data() + (size_t) p * K;
-        for (int k = 0; k < K; ++k) acc[(size_t) k] += cmul (w[k], x[k]);
-    }
+    for (int c = 0; c < Ca; ++c)
+        for (int p = 0; p < P; ++p)
+        {
+            const cpx* x = Xp (c, p);
+            const cpx* w = W.data() + idx (c, p);
+            for (int k = 0; k < K; ++k) acc[(size_t) k] += cmul (w[k], x[k]);
+        }
     fft.inverse (acc.data(), frame.data());
     std::copy (frame.begin() + B, frame.end(), yOut); // overlap-save: valid half
 }
 
-void AecCore::processBlock (const float* ref, const float* mic, float* out) noexcept
+void AecCore::processBlock (const float* const* refs, const float* mic, float* out) noexcept
 {
-    float curMic[B]; // `out` may alias `mic`
+    float* curMic = micCopy.data(); // `out` may alias `mic`
     std::copy (mic, mic + B, curMic);
 
-    // ---------------------------------------------------------------- 1. reference spectrum
+    // ---------------------------------------------------------------- 1. reference spectra
     xHead = (xHead - 1 + Pmax) % Pmax; // newest spectrum lives at partition 0
-    std::copy (refPrev.begin(), refPrev.end(), frame.begin());
-    std::copy (ref, ref + B, frame.begin() + B);
-    std::copy (ref, ref + B, refPrev.begin());
-    fft.forward (frame.data(), Xp (0));
-    refActive = energy (ref, B) / B > kRefActiveThreshold;
-
-    std::fill (psum.begin(), psum.end(), 0.0f);
-    for (int p = 0; p < P; ++p)
+    float sx = 0.0f;
+    for (int c = 0; c < Ca; ++c)
     {
-        const cpx* x = Xp (p);
-        for (int k = 0; k < K; ++k) psum[(size_t) k] += norm2 (x[k]);
+        float* prev = refPrev.data() + (size_t) c * (size_t) B;
+        std::copy (prev, prev + B, frame.begin());
+        std::copy (refs[c], refs[c] + B, frame.begin() + B);
+        std::copy (refs[c], refs[c] + B, prev);
+        fft.forward (frame.data(), Xp (c, 0));
+        sx += energy (refs[c], B);
     }
+    refActive = sx / (float) (B * Ca) > kRefActiveThreshold;
 
     // ---------------------------------------------------------------- 2. both filters
     filter (Wfg, yF.data());
@@ -144,6 +177,7 @@ void AecCore::processBlock (const float* ref, const float* mic, float* out) noex
     const float sd = energy (curMic, B);
     float sf = energy (eF.data(), B);
     const float sb = energy (eB.data(), B);
+    const auto wCount = (ptrdiff_t) Wfg.size();
 
     // ---------------------------------------------------------------- 3. two-path control
     if (refActive && ! settings.freeze)
@@ -157,7 +191,7 @@ void AecCore::processBlock (const float* ref, const float* mic, float* out) noex
         {
             if (++betterCount >= 2)
             {
-                std::copy (Wbg.begin(), Wbg.begin() + (ptrdiff_t) P * K, Wfg.begin());
+                std::copy (Wbg.begin(), Wbg.begin() + wCount, Wfg.begin());
                 std::copy (yB.begin(), yB.end(), yF.begin());
                 std::copy (eB.begin(), eB.end(), eF.begin());
                 sf = sb;
@@ -175,7 +209,7 @@ void AecCore::processBlock (const float* ref, const float* mic, float* out) noex
         {
             if (++worseCount >= 4)
             {
-                std::copy (Wfg.begin(), Wfg.begin() + (ptrdiff_t) P * K, Wbg.begin());
+                std::copy (Wfg.begin(), Wfg.begin() + wCount, Wbg.begin());
                 std::copy (eF.begin(), eF.end(), eB.begin());
                 sBB = sFF;
                 worseCount = 0;
@@ -232,36 +266,61 @@ void AecCore::processBlock (const float* ref, const float* mic, float* out) noex
     }
 
     // ---------------------------------------------------------------- 6. background adaptation
+    // Diagonalised partitioned-block frequency-domain Kalman filter (Kuech, Mabande & Enzner 2014).
+    // Every (channel, partition, bin) keeps its own state uncertainty Pc: bins that have never been
+    // excited (e.g. a new chord in the backing track) learn at full speed as soon as they appear,
+    // while near-end sound (raising the observation noise psiS) automatically slows adaptation.
     if (refActive && ! settings.freeze)
     {
-        // regularisation: absolute floor (~ -70 dBFS reference in every partition) plus a
-        // fraction of the long-term reference power, so that pauses / weak bins in the
-        // reference cannot blow up the normalised step.
-        const float delta = (float) P * (float) N * 1.0e-7f;
-        const float slowA = 1.0f / (float) std::max (P, (int) (0.5 * sr / B));
+        const float a2 = kKalmanA * kKalmanA;
+
+        // Echo-path change (mic / speaker moved): the error is still strongly correlated with the echo
+        // estimate, unlike near-end singing. Re-open the state uncertainty so the filter re-learns fast.
+        if (leak > kPathChangeLeak)
+            for (auto& v : Pcov) v = std::min (kKalmanP0, v * kPathChangeInflate + 1.0e-6f);
+
+        const float gainScale = 2.0f * settings.stepSize; // default 0.5 -> 1
         for (int k = 0; k < K; ++k)
         {
-            psumSlow[(size_t) k] += slowA * (psum[(size_t) k] - psumSlow[(size_t) k]);
-            stepK[(size_t) k] = settings.stepSize / (psum[(size_t) k] + 0.25f * psumSlow[(size_t) k] + delta);
+            psiS[(size_t) k] = 0.5f * psiS[(size_t) k] + 0.5f * norm2 (EB[(size_t) k]);
+            kalDen[(size_t) k] = 0.0f;
         }
+        for (int c = 0; c < Ca; ++c)
+            for (int p = 0; p < P; ++p)
+            {
+                const cpx* x = Xp (c, p);
+                const float* pc = Pc (c, p);
+                for (int k = 0; k < K; ++k) kalDen[(size_t) k] += pc[k] * norm2 (x[k]);
+            }
+        const float delta = (float) N * 1.0e-9f;
+        for (int k = 0; k < K; ++k) // kalDen := 1 / (sum Pc|X|^2 + psi)
+            kalDen[(size_t) k] = 1.0f / (kalDen[(size_t) k] + kPsiScale * psiS[(size_t) k] + delta);
 
-        for (int p = 0; p < P; ++p)
-        {
-            const cpx* x = Xp (p);
-            cpx* w = Wb (p);
-            for (int k = 0; k < K; ++k)
-                w[k] += cmulConj (x[k], EB[(size_t) k]) * stepK[(size_t) k];
-        }
+        for (int c = 0; c < Ca; ++c)
+            for (int p = 0; p < P; ++p)
+            {
+                const cpx* x = Xp (c, p);
+                cpx* w = Wb (c, p);
+                float* pc = Pc (c, p);
+                for (int k = 0; k < K; ++k)
+                {
+                    const float x2 = norm2 (x[k]);
+                    const float g = pc[k] * kalDen[(size_t) k];              // Kalman gain / conj(X)
+                    w[k] += cmulConj (x[k], EB[(size_t) k]) * (gainScale * g);
+                    const float shrink = std::max (0.0f, 1.0f - 0.5f * g * x2); // 0.5 = B/N
+                    pc[k] = a2 * shrink * pc[k] + (1.0f - a2) * norm2 (w[k]) + kKalmanQ;
+                }
+            }
 
-        // gradient constraint (time-domain causality), round-robin
-        for (int c = 0; c < 2; ++c)
+        // gradient constraint (time-domain causality), round-robin, every channel
+        for (int n = 0; n < 2; ++n)
         {
-            constrainPartition (constrainIdx);
+            for (int c = 0; c < Ca; ++c) constrainPartition (c, constrainIdx);
             constrainIdx = (constrainIdx + 1) % P;
         }
     }
 
-    if (++blockCounter >= 16)
+    if (++blockCounter >= std::max (1, 4096 / B))
     {
         blockCounter = 0;
         updateDelayEstimate();
@@ -280,8 +339,7 @@ void AecCore::processBlock (const float* ref, const float* mic, float* out) noex
         case OutputMode::RawMic:
         {
             // keep the suppressor state running so that switching modes is seamless
-            float scratch[B];
-            residualSuppress (eF.data(), yF.data(), scratch, true);
+            residualSuppress (eF.data(), yF.data(), scratch.data(), true);
             const auto& src = settings.mode == OutputMode::RawMic ? prevMic : prevY;
             std::copy (src.begin(), src.end(), out);
             break;
@@ -291,9 +349,9 @@ void AecCore::processBlock (const float* ref, const float* mic, float* out) noex
     std::copy (curMic, curMic + B, prevMic.begin());
 }
 
-void AecCore::constrainPartition (int p) noexcept
+void AecCore::constrainPartition (int c, int p) noexcept
 {
-    cpx* w = Wb (p);
+    cpx* w = Wb (c, p);
     fft.inverse (w, frame.data());
     std::fill (frame.begin() + B, frame.end(), 0.0f);
     fft.forward (frame.data(), w);
@@ -301,18 +359,19 @@ void AecCore::constrainPartition (int p) noexcept
 
 void AecCore::updateDelayEstimate() noexcept
 {
-    // global peak of the foreground impulse response (P inverse FFTs every 16 blocks)
+    // global peak of the foreground impulse responses
     int bestTap = -1;
     float peak = 0.0f;
-    for (int p = 0; p < P; ++p)
-    {
-        fft.inverse (Wf (p), frame.data());
-        for (int i = 0; i < B; ++i)
+    for (int c = 0; c < Ca; ++c)
+        for (int p = 0; p < P; ++p)
         {
-            const float a = std::abs (frame[(size_t) i]);
-            if (a > peak) { peak = a; bestTap = p * B + i; }
+            fft.inverse (Wf (c, p), frame.data());
+            for (int i = 0; i < B; ++i)
+            {
+                const float a = std::abs (frame[(size_t) i]);
+                if (a > peak) { peak = a; bestTap = p * B + i; }
+            }
         }
-    }
     echoDelayMs = bestTap < 0 ? 0.0f : (float) (bestTap * 1000.0 / sr);
 }
 

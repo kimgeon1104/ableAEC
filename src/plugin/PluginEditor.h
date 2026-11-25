@@ -29,14 +29,15 @@ private:
     Knob filterLen, step, refDelay, resAmount, resFloor;
 
     juce::ToggleButton freezeButton { "Freeze" }, offButton { "AEC Off" };
-    juce::ComboBox modeBox;
+    juce::ComboBox modeBox, latencyBox, refModeBox;
     juce::TextButton resetButton { "Reset Filter" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> freezeAtt, offAtt;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> modeAtt;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> modeAtt, latencyAtt, refModeAtt;
 
     // cached meter values for painting
     float erle = 0, delayMs = 0, refDb = -120, micDb = -120, outDb = -120;
     bool converged = false, sidechain = false;
+    int refChannels = 0, latencySamples = 0;
 
     juce::Rectangle<int> meterArea, statusArea;
 

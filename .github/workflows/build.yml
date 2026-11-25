@@ -42,6 +42,13 @@ jobs:
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
 
+      - name: Realistic vocal + backing-track test
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y espeak-ng
+          python3 -m pip install --user numpy scipy
+          python3 tests/realistic/run_realistic.py --check build/aec_wav build/realistic
+
       - name: Collect plugin
         shell: bash
         run: |

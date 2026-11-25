@@ -18,6 +18,10 @@ add_library(ableaec_dsp STATIC src/dsp/AecCore.cpp)
 target_include_directories(ableaec_dsp PUBLIC src/dsp)
 set_target_properties(ableaec_dsp PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# offline WAV processor (also handy for checking your own recordings)
+add_executable(aec_wav tools/aec_wav.cpp)
+target_link_libraries(aec_wav PRIVATE ableaec_dsp)
+
 if(ABLEAEC_BUILD_TESTS)
     enable_testing()
     add_executable(aec_sim_test tests/AecSimTest.cpp)
