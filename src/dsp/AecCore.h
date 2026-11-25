@@ -3,23 +3,25 @@
 //
 //  ref L/R (speaker / backing track) ──┐
 //                                      ▼
-//  mic (vocal + echo) ──► [two-path PB-FDAF, Kalman-adapted] ──► e ──► [residual echo suppressor] ──► out
+//  mic (vocal + echo) ──► [two-path GMDF, Kalman-adapted] ──► e ──► [residual echo suppressor] ──► out
 //
 // Linear stage
-//   Partitioned-block frequency-domain adaptive filter (overlap-save). One filter per reference
-//   channel, so stereo playback through two loudspeakers (different paths to the mic) is modelled
-//   correctly. The background filter is adapted with a diagonalised frequency-domain Kalman filter
-//   (Kuech, Mabande & Enzner 2014): each (partition, bin) has its own uncertainty, which makes it
-//   converge quickly on music and slow down by itself while the performer sings. A foreground copy
-//   ("two-path", Ochiai et al.) produces the output and only takes over the background
-//   coefficients when they demonstrably cancel more echo.
+//   Generalised multidelay filter (GMDF, Moulines et al. 1995): overlap-save partitions of
+//   L taps (FFT size 2L) updated every hop of B samples, B <= L. The partition length sets the
+//   frequency resolution (crucial for tonal music and sub-bass), the hop sets the latency, so the
+//   two can be chosen independently. One filter per reference channel, so stereo playback through
+//   two loudspeakers is modelled correctly.
+//   The background filter is adapted with a diagonalised frequency-domain Kalman filter
+//   (Kuech, Mabande & Enzner 2014): every (channel, partition, bin) keeps its own uncertainty,
+//   which makes it converge quickly on music and slow down by itself while the performer sings.
+//   A foreground copy ("two-path", Ochiai et al.) produces the output and only takes over the
+//   background coefficients when they demonstrably cancel more echo.
 //
 // Non-linear stage
-//   STFT (sqrt-Hann, 50 % overlap) Wiener-style gain; residual echo is estimated from the echo
-//   estimate scaled by the measured leakage (after J.-M. Valin, 2007).
+//   STFT (sqrt-Hann, 2B frame, 50 % overlap) Wiener-style gain; residual echo is estimated from
+//   the echo estimate scaled by the measured leakage (after J.-M. Valin, 2007).
 //
-// The block size B is chosen at prepare(). Algorithmic latency of processBlock() is B samples.
-// No allocation happens after prepare().
+// Algorithmic latency of processBlock() is B samples. No allocation happens after prepare().
 
 #include "Fft.h"
 #include <vector>
@@ -49,16 +51,22 @@ class AecCore
 public:
     static constexpr int kMaxRefs = 2;
 
-    // Recommended block size: ~10.7 ms ("low latency") or ~21 ms ("quality") at any sample rate.
+    // Hop (= latency) and partition (= frequency resolution) sizes for the two plugin modes,
+    // scaled with the sample rate so durations stay the same:
+    //   quality      hop ~10.7 ms, partition ~42.7 ms (512 / 2048 at 48 kHz)
+    //   low latency  hop  ~5.3 ms, partition ~42.7 ms (256 / 2048 at 48 kHz)
     static int blockSizeFor (double sampleRate, bool lowLatency) noexcept;
+    static int partitionSizeFor (double sampleRate, bool lowLatency) noexcept;
 
-    // blockSize must be a power of two (>= 64). numRefs is 1 (mono) or 2 (stereo reference).
-    void prepare (double sampleRate, float maxFilterLengthMs, int blockSize, int numRefs = 1);
+    // blockSize (hop) and partitionSize must be powers of two with blockSize <= partitionSize.
+    // partitionSize <= 0 means "same as blockSize" (classic MDF). numRefs is 1 or 2.
+    void prepare (double sampleRate, float maxFilterLengthMs, int blockSize, int numRefs = 1, int partitionSize = 0);
     void reset();
     void resetFilter() noexcept;
     void setSettings (const AecSettings& s) noexcept;
 
     int getBlockSize() const noexcept { return B; }
+    int getPartitionSize() const noexcept { return L; }
     int getNumRefs() const noexcept { return Ca; }
 
     // Use only the first n (<= prepared) reference channels, e.g. to switch stereo -> mono at run time.
@@ -82,11 +90,12 @@ public:
     int getNumPartitions() const noexcept { return P; }
 
 private:
-    size_t idx (int c, int p) const noexcept { return ((size_t) c * (size_t) Pmax + (size_t) p) * (size_t) K; }
-    cpx* Xp (int c, int p) noexcept { return X.data() + idx (c, (xHead + p) % Pmax); }
-    cpx* Wf (int c, int p) noexcept { return Wfg.data() + idx (c, p); }
-    cpx* Wb (int c, int p) noexcept { return Wbg.data() + idx (c, p); }
-    float* Pc (int c, int p) noexcept { return Pcov.data() + idx (c, p); }
+    size_t widx (int c, int p) const noexcept { return ((size_t) c * (size_t) Pmax + (size_t) p) * (size_t) K; }
+    // reference spectrum of channel c for partition p (= p * O hops ago)
+    cpx* Xp (int c, int p) noexcept { return X.data() + ((size_t) c * (size_t) R + (size_t) ((xHead + p * O) % R)) * (size_t) K; }
+    cpx* Wf (int c, int p) noexcept { return Wfg.data() + widx (c, p); }
+    cpx* Wb (int c, int p) noexcept { return Wbg.data() + widx (c, p); }
+    float* Pc (int c, int p) noexcept { return Pcov.data() + widx (c, p); }
 
     void filter (std::vector<cpx>& W, float* yOut) noexcept;
     void constrainPartition (int c, int p) noexcept;
@@ -94,15 +103,21 @@ private:
     void residualSuppress (const float* e, const float* y, float* out, bool bypassGain) noexcept;
 
     double sr = 48000.0;
-    int B = 256, N = 512, K = 257, C = 1, Ca = 1; // C = allocated, Ca = active reference channels
+    int B = 256;          // hop (block) size
+    int L = 256;          // partition length
+    int N = 512, K = 257; // filter FFT size (2L) and bins
+    int O = 1;            // hops per partition (L / B)
+    int R = 1;            // reference-spectrum ring length in hops
+    int C = 1, Ca = 1;    // allocated / active reference channels
     int Pmax = 1, P = 1;
     AecSettings settings;
 
-    Fft fft;
+    Fft fft;                            // size N (filter)
     std::vector<cpx> X, Wfg, Wbg;       // ref spectra rings, foreground / background filters
     std::vector<float> Pcov;            // Kalman state uncertainty per (channel, partition, bin)
     int xHead = 0;
-    std::vector<float> refPrev, frame, yF, yB, eF, eB, micCopy, scratch;
+    std::vector<float> refHist;         // last N reference samples per channel
+    std::vector<float> frame, yF, yB, eF, eB, micCopy, scratch;
     std::vector<cpx> acc, EF, EB, YF;
     std::vector<float> kalDen, psiS;
     std::vector<float> meanE, meanY;    // for leakage estimation
@@ -110,8 +125,8 @@ private:
     float leak = 1.0f;
 
     // two-path control
-    double sFF = 0.0, sBB = 0.0, sDD = 0.0;
-    int betterCount = 0, worseCount = 0;
+    double sFF = 0.0, sDD = 0.0;                         // divergence guard
+    double davg1 = 0.0, davg2 = 0.0, dvar1 = 0.0, dvar2 = 0.0; // foreground/background statistics
 
     // state / meters
     bool refActive = false;
@@ -119,8 +134,10 @@ private:
     double micPowS = 1e-9, errPowS = 1e-9;
     float erleDb = 0.0f, echoDelayMs = 0.0f;
 
-    // residual suppressor
-    std::vector<float> window, resE, resY, ola, prevMic, prevY;
+    // residual suppressor (own STFT of size 2B)
+    Fft fftRes;
+    int Nr = 512, Kr = 257;
+    std::vector<float> window, resE, resY, ola, resFrame, prevMic, prevY;
     std::vector<cpx> RE, RY;
     std::vector<float> gain;
 };

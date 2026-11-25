@@ -89,7 +89,8 @@ void AbleAecProcessor::prepareToPlay (double sampleRate, int)
         maxB = juce::jmax (maxB, b);
         for (auto& c : cores[(size_t) m])
         {
-            c.prepare (sampleRate, kMaxFilterMs, b, ableaec::AecCore::kMaxRefs);
+            c.prepare (sampleRate, kMaxFilterMs, b, ableaec::AecCore::kMaxRefs,
+                       ableaec::AecCore::partitionSizeFor (sampleRate, m == 1));
             c.setSettings (readSettings());
         }
     }

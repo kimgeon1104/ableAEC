@@ -15,6 +15,8 @@
 //   --mode <clean|linear|echo|raw>             (default clean)
 //   --latency <low|quality>  block size ~5 ms / ~10 ms   (default quality)
 //   --monoref        sum a stereo ref to mono instead of using a stereo (2-channel) reference
+//   --block <n>      explicit hop size (power of two), overrides --latency (for experiments)
+//   --partition <n>  explicit filter partition size (power of two, >= hop), overrides --latency
 //
 // Both files must share the sample rate. Supports PCM 16/24/32-bit and 32-bit float WAV.
 
@@ -123,6 +125,7 @@ int main (int argc, char** argv)
     ableaec::AecSettings s;
     float refDelayMs = 0.0f;
     bool lowLatency = false, monoRef = false;
+    int blockOverride = 0, partitionOverride = 0;
     for (int i = 4; i < argc; i += 2)
     {
         const std::string k = argv[i];
@@ -133,6 +136,8 @@ int main (int argc, char** argv)
         else if (k == "--floor") s.resFloorDb = (float) std::atof (v);
         else if (k == "--refdelay") refDelayMs = (float) std::atof (v);
         else if (k == "--latency") lowLatency = std::string (v) == "low";
+        else if (k == "--block") blockOverride = std::atoi (v);
+        else if (k == "--partition") partitionOverride = std::atoi (v);
         else if (k == "--monoref") { monoRef = true; --i; }
         else if (k == "--mode")
         {
@@ -156,7 +161,9 @@ int main (int argc, char** argv)
     const int numRefs = (ref.channels >= 2 && ! monoRef) ? 2 : 1;
     ableaec::AecCore aec;
     aec.prepare (mic.sampleRate, std::max (500.0f, s.filterLengthMs),
-                 ableaec::AecCore::blockSizeFor (mic.sampleRate, lowLatency), numRefs);
+                 blockOverride > 0 ? blockOverride : ableaec::AecCore::blockSizeFor (mic.sampleRate, lowLatency),
+                 numRefs,
+                 partitionOverride > 0 ? partitionOverride : ableaec::AecCore::partitionSizeFor (mic.sampleRate, lowLatency));
     aec.setSettings (s);
     const int B = aec.getBlockSize();
 
@@ -190,8 +197,8 @@ int main (int argc, char** argv)
     std::vector<float> aligned (out.begin() + B, out.begin() + B + (long) n); // remove algorithmic latency
     if (! writeWav (argv[3], aligned, mic.sampleRate)) { std::fprintf (stderr, "cannot write %s\n", argv[3]); return 1; }
 
-    std::printf ("processed %.2f s @ %d Hz | block %d | %s reference | final ERLE %.1f dB | echo delay %.1f ms\n",
-                 (double) n / mic.sampleRate, mic.sampleRate, B, numRefs == 2 ? "stereo" : "mono",
+    std::printf ("processed %.2f s @ %d Hz | hop %d, partition %d | %s reference | final ERLE %.1f dB | echo delay %.1f ms\n",
+                 (double) n / mic.sampleRate, mic.sampleRate, B, aec.getPartitionSize(), numRefs == 2 ? "stereo" : "mono",
                  aec.getErleDb(), aec.getEchoDelayMs() + refDelayMs);
     return 0;
 }
