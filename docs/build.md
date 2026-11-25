@@ -89,6 +89,15 @@ python3 tools/make_ui_font.py --check  # 빠진 글자 검사
 
 `.github/workflows/build.yml` 이 push / PR 마다 Linux · Windows · macOS 에서 빌드하고 테스트를 돌립니다. 각 실행의 **Artifacts** 에서 `AbleAEC-windows`, `AbleAEC-macos` 를 받아 바로 설치할 수 있습니다.
 
+## 릴리스
+
+`.github/workflows/release.yml` 이 세 OS 빌드·테스트를 돌린 뒤 OS별 zip(`AbleAEC-windows.zip`, `AbleAEC-macos.zip`, `AbleAEC-linux.zip`)을 GitHub 릴리스에 올립니다. 릴리스 설명은 `.github/release-notes/<태그>.md` 에서 가져옵니다.
+
+- `v*` 태그를 push 하거나
+- Actions → **release** → **Run workflow** 에서 태그(예: `v0.1.0`)를 입력하면 선택한 커밋에 태그를 만들고 릴리스합니다.
+
+새 버전을 낼 때는 `CMakeLists.txt` 의 `project(AbleAEC VERSION …)` 와 릴리스 노트 파일을 먼저 맞춥니다.
+
 ## 테스트
 
 | 테스트 | 내용 |
