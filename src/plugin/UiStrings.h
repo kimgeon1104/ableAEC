@@ -76,9 +76,9 @@ inline const Entry& entry (Str s)
         { "smp", "샘플" },
         // tooltips
         { "How long an echo the filter can remove: speaker-to-mic delay plus the room's reverb. "
-          "Use 300-500 ms in large or echoey rooms.",
+          "Use 300-500 ms in large or echoey rooms. Longer costs a little more CPU; no latency change.",
           "지울 수 있는 에코의 길이입니다. 스피커에서 마이크까지의 지연과 방의 울림을 합한 것보다 길어야 합니다. "
-          "넓거나 울리는 방은 300-500 ms." },
+          "넓거나 울리는 방은 300-500 ms. 길수록 CPU가 조금 늘고, 지연은 그대로입니다." },
         { "How fast the filter learns. Higher learns faster but wobbles more while you sing.",
           "필터가 배우는 속도입니다. 높이면 빨리 배우지만 노래하는 동안 흔들림이 커집니다." },
         { "Delays the speaker signal before it is compared with the mic. Only needed for very large delays "
@@ -87,7 +87,7 @@ inline const Entry& entry (Str s)
         { "Extra removal of what the filter could not cancel. Higher removes more but can soften the voice "
           "while you sing. 0 % turns it off.",
           "필터가 못 지운 나머지를 추가로 줄입니다. 높이면 더 지우지만 노래할 때 목소리가 약간 뭉개질 수 있습니다. "
-          "0 %면 꺼집니다." },
+          "0 %면 꺼집니다. CPU는 거의 쓰지 않습니다." },
         { "The most the residual suppressor may turn a frequency down.",
           "잔여 억제가 한 주파수를 최대로 줄이는 양입니다." },
         { "What the plugin outputs. Clean = echo cancelled and residual suppressed (recommended). "
@@ -98,9 +98,9 @@ inline const Entry& entry (Str s)
           "품질 우선: 가장 안정적, 지연 약 21 ms. 저지연: 지연이 절반이지만 피아노류 음악에 약하고 CPU를 더 씁니다. "
           "바꾸면 필터가 초기화됩니다." },
         { "Stereo uses the left and right speaker signals separately (needed with two speakers). "
-          "Mono sums them (one speaker, less CPU).",
+          "Mono sums them (one speaker, about 35 % less CPU).",
           "스테레오는 왼쪽/오른쪽 스피커 신호를 따로 씁니다(스피커 2대일 때 필요). 모노는 합쳐서 씁니다(스피커 1대, CPU 절약)." },
-        { "Stop learning and keep the current filter.", "학습을 멈추고 지금 필터를 유지합니다." },
+        { "Stop learning and keep the current filter (halves the CPU).", "학습을 멈추고 지금 필터를 유지합니다(CPU 절반)." },
         { "Pass the mic through untouched (same latency).", "처리하지 않고 원본 마이크를 그대로 내보냅니다(지연은 같음)." },
         { "Forget what the filter has learned, e.g. after moving the mic or speakers.",
           "학습한 내용을 지웁니다. 마이크나 스피커 위치를 크게 바꾼 뒤에 누르세요." },
@@ -142,16 +142,25 @@ inline juce::String guide (Lang l)
             "- 스피커 소리가 마이크에 안 들어가면 목소리를 건드리지 않습니다.\n"
             "- 마이크나 스피커 위치를 크게 바꾸면 '필터 초기화'를 누르세요.\n"
             "\n"
-            "# 조절기\n"
-            "- 필터 길이 (기본 250 ms): 지울 수 있는 에코의 길이. 넓거나 울리는 방은 300-500 ms.\n"
-            "- 학습 속도 (기본 50 %): 높이면 빨리 배우지만 노래할 때 흔들림이 커집니다.\n"
-            "- 참조 지연 (기본 0 ms): 블루투스 스피커처럼 지연이 아주 클 때만 씁니다.\n"
-            "- 잔여 억제 (기본 20 %): 남은 에코를 더 줄입니다. 높이면 목소리가 약간 뭉개질 수 있습니다.\n"
-            "- 억제 한계 (기본 -18 dB): 잔여 억제가 줄일 수 있는 최대량.\n"
-            "- 출력: 깨끗하게(권장) / 선형 AEC만 / 추정 에코 듣기(지워지는 소리 확인) / 원본 마이크.\n"
-            "- 지연 모드: 품질 우선(약 21 ms, 권장) / 저지연(약 11 ms, 피아노류 음악에 약함, CPU 더 사용).\n"
-            "- 참조: 스테레오(스피커 2대일 때 필요) / 모노(스피커 1대, CPU 절약).\n"
-            "- 학습 멈춤: 지금 필터를 유지. AEC 끄기: 원본 그대로 출력.\n"
+            "# 조절기: 역할과 비용\n"
+            "CPU는 마이크 채널당, 기본 설정(품질 우선, 스테레오, 250 ms) 약 8 % 기준입니다. 지연이 바뀌는 것은 지연 모드뿐입니다.\n"
+            "- 필터 길이 (기본 250 ms): 지울 수 있는 에코의 길이. 넓거나 울리는 방은 300-500 ms. "
+            "비용: 길수록 CPU 증가(100 ms 약 7 %, 500 ms 약 10 %)와 처음 학습이 조금 느려짐. 짧으면 울림 끝부분이 남음. 지연 변화 없음.\n"
+            "- 학습 속도 (기본 50 %): 높이면 빨리 배우지만 노래할 때 흔들림이 커지고, 낮추면 안정적이지만 느리게 배움. CPU, 지연 변화 없음.\n"
+            "- 참조 지연 (기본 0 ms): 스피커 신호를 미리 늦춤. 블루투스 스피커처럼 지연이 아주 클 때만 사용. "
+            "비용: 출력 지연은 늘지 않음. 실제 에코 지연보다 크게 잡으면 에코를 못 지움.\n"
+            "- 잔여 억제 (기본 20 %): 남은 에코를 더 줄임. 비용: CPU 거의 없음(약 0.4 %). 높이면 노래할 때 목소리가 약간 뭉개질 수 있음. 지연 변화 없음.\n"
+            "- 억제 한계 (기본 -18 dB): 잔여 억제가 줄일 수 있는 최대량. 낮출수록 더 지우지만 목소리 손상 가능성 증가.\n"
+            "- 출력: 깨끗하게(권장) / 선형 AEC만 / 추정 에코 듣기 / 원본 마이크. 모두 같은 지연이라 바꿔도 박자가 어긋나지 않음.\n"
+            "- 지연 모드: 품질 우선(지연 1024 샘플, 약 21 ms) / 저지연(512 샘플, 약 11 ms). "
+            "비용: 저지연은 CPU 약 2배(약 15 %), 피아노류 음악에서 성능 저하. 바꾸면 필터 초기화.\n"
+            "- 참조: 스테레오(스피커 2대일 때 필요) / 모노(스피커 1대). 비용: 모노가 CPU 약 35 % 적음(약 5 %). 스피커 2대에 모노를 쓰면 에코가 덜 지워짐.\n"
+            "- 학습 멈춤: 지금 필터를 유지. 비용: CPU 절반(약 4 %). 마이크/스피커가 움직이면 따라가지 못함.\n"
+            "- AEC 끄기: 원본 그대로 출력(지연은 같음). 필터 초기화: 학습 내용 삭제, 다시 배우는 동안(수 초) 에코가 남음.\n"
+            "\n"
+            "# GPU를 쓰나요?\n"
+            "아니요. 여기서 '학습'은 딥러닝 학습이 아니라, 매 순간 방의 반향을 따라가는 작은 계산(적응 필터)입니다. "
+            "5-10 ms마다 바로 결과를 내야 해서 GPU로 데이터를 보내고 받는 시간이 계산보다 오히려 깁니다. CPU 한 코어의 약 8 %면 충분합니다.\n"
             "\n"
             "# 화면 읽기\n"
             "- 스피커 / 마이크 입력 / 출력: 각 신호의 크기.\n"
@@ -188,16 +197,25 @@ inline juce::String guide (Lang l)
         "- If no speaker sound reaches the mic, your voice is left untouched.\n"
         "- After moving the mic or speakers a lot, press Reset Filter.\n"
         "\n"
-        "# Controls\n"
-        "- Filter Length (250 ms): how long an echo can be removed. 300-500 ms in large or echoey rooms.\n"
-        "- Adapt Speed (50 %): higher learns faster but wobbles more while you sing.\n"
-        "- Ref Delay (0 ms): only for very large delays such as Bluetooth speakers.\n"
-        "- Residual Supp. (20 %): removes more of what is left; higher can soften the voice.\n"
-        "- Supp. Floor (-18 dB): the most the residual suppressor may turn a frequency down.\n"
-        "- Output: Clean (recommended) / Linear AEC only / Echo estimate (hear what is removed) / Raw mic.\n"
-        "- Latency: Quality (~21 ms, recommended) / Low (~11 ms, weaker on piano-like music, more CPU).\n"
-        "- Reference: Stereo (needed with two speakers) / Mono (one speaker, less CPU).\n"
-        "- Freeze keeps the current filter. AEC Off passes the mic through.\n"
+        "# Controls: what they do and what they cost\n"
+        "CPU is per mic channel; the default (Quality, Stereo, 250 ms) uses about 8 %. Only Latency changes the plugin's latency.\n"
+        "- Filter Length (250 ms): how long an echo can be removed; 300-500 ms in large or echoey rooms. "
+        "Cost: longer uses more CPU (100 ms about 7 %, 500 ms about 10 %) and learns a little slower at first. Too short leaves the end of the reverb. No latency change.\n"
+        "- Adapt Speed (50 %): higher learns faster but wobbles more while you sing; lower is steadier but slower. No CPU or latency change.\n"
+        "- Ref Delay (0 ms): delays the speaker signal, only for very large delays such as Bluetooth speakers. "
+        "Cost: no added output latency, but set larger than the real echo delay and the echo cannot be removed.\n"
+        "- Residual Supp. (20 %): removes more of what is left. Cost: almost no CPU (about 0.4 %); higher can soften the voice while you sing. No latency change.\n"
+        "- Supp. Floor (-18 dB): the most the residual suppressor may turn a frequency down; lower removes more but risks the voice.\n"
+        "- Output: Clean (recommended) / Linear AEC only / Echo estimate / Raw mic. All have the same latency, so switching never shifts timing.\n"
+        "- Latency: Quality (1024 samples, ~21 ms) / Low (512 samples, ~11 ms). "
+        "Cost: Low uses about twice the CPU (about 15 %) and is weaker on piano-like music. Changing it resets the filter.\n"
+        "- Reference: Stereo (needed with two speakers) / Mono (one speaker). Cost: Mono uses about 35 % less CPU (about 5 %); with two speakers it removes less echo.\n"
+        "- Freeze keeps the current filter. Cost: halves the CPU (about 4 %), but it cannot follow a moved mic or speaker.\n"
+        "- AEC Off passes the mic through (same latency). Reset Filter forgets what was learned; the echo comes back for a few seconds while it re-learns.\n"
+        "\n"
+        "# Does it use the GPU?\n"
+        "No. 'Learning' here is not deep-learning training but a small calculation (an adaptive filter) that follows the room's echo moment by moment. "
+        "It must answer every 5-10 ms, and moving audio to a GPU and back would take longer than the calculation itself. About 8 % of one CPU core is enough.\n"
         "\n"
         "# Reading the display\n"
         "- Speaker / Mic in / Output: signal levels.\n"
