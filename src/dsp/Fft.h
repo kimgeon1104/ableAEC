@@ -29,27 +29,35 @@ inline float norm2 (cpx a) noexcept { return a.real() * a.real() + a.imag() * a.
 class Fft
 {
 public:
+    // Real FFT of size n (power of two, >= 4), computed with one complex FFT of size n/2.
     void prepare (int size)
     {
         n = size;
-        twiddle.resize ((size_t) n / 2);
-        for (int k = 0; k < n / 2; ++k)
+        m = n / 2;
+        twiddle.resize ((size_t) m / 2 + 1);
+        for (int k = 0; k <= m / 2; ++k) // twiddles of the m-point complex FFT (first half suffices)
+        {
+            const double a = -2.0 * 3.14159265358979323846 * k / m;
+            twiddle[(size_t) k] = { (float) std::cos (a), (float) std::sin (a) };
+        }
+        split.resize ((size_t) m + 1);
+        for (int k = 0; k <= m; ++k) // W_n^k used to split / merge the half-size transform
         {
             const double a = -2.0 * 3.14159265358979323846 * k / n;
-            twiddle[(size_t) k] = { (float) std::cos (a), (float) std::sin (a) };
+            split[(size_t) k] = { (float) std::cos (a), (float) std::sin (a) };
         }
 
         int bits = 0;
-        while ((1 << bits) < n) ++bits;
-        bitrev.resize ((size_t) n);
-        for (int i = 0; i < n; ++i)
+        while ((1 << bits) < m) ++bits;
+        bitrev.resize ((size_t) m);
+        for (int i = 0; i < m; ++i)
         {
             int r = 0;
             for (int b = 0; b < bits; ++b)
                 if (i & (1 << b)) r |= 1 << (bits - 1 - b);
             bitrev[(size_t) i] = r;
         }
-        work.assign ((size_t) n, cpx {});
+        work.assign ((size_t) m, cpx {});
     }
 
     int size() const noexcept { return n; }
@@ -57,45 +65,60 @@ public:
     // in: n real samples -> out: n/2+1 complex bins (unscaled)
     void forward (const float* in, cpx* out) noexcept
     {
-        for (int i = 0; i < n; ++i) work[(size_t) i] = { in[i], 0.0f };
+        for (int i = 0; i < m; ++i) work[(size_t) i] = { in[2 * i], in[2 * i + 1] };
         transform (false);
-        for (int k = 0; k <= n / 2; ++k) out[k] = work[(size_t) k];
+        const cpx z0 = work[0];
+        out[0] = { z0.real() + z0.imag(), 0.0f };
+        out[m] = { z0.real() - z0.imag(), 0.0f };
+        for (int k = 1; k < m; ++k)
+        {
+            const cpx zk = work[(size_t) k];
+            const cpx zc = std::conj (work[(size_t) (m - k)]);
+            const cpx fe = 0.5f * (zk + zc);
+            const cpx d = 0.5f * (zk - zc);
+            const cpx fo = { d.imag(), -d.real() }; // d / i
+            out[k] = fe + cmul (split[(size_t) k], fo);
+        }
     }
 
     // in: n/2+1 complex bins -> out: n real samples (scaled by 1/n)
     void inverse (const cpx* in, float* out) noexcept
     {
-        const int half = n / 2;
-        work[0] = { in[0].real(), 0.0f };
-        work[(size_t) half] = { in[half].real(), 0.0f };
-        for (int k = 1; k < half; ++k)
+        for (int k = 0; k < m; ++k)
         {
-            work[(size_t) k] = in[k];
-            work[(size_t) (n - k)] = std::conj (in[k]);
+            const cpx xk = in[k];
+            const cpx xc = std::conj (in[m - k]);
+            const cpx fe = 0.5f * (xk + xc);
+            const cpx fo = cmul (0.5f * (xk - xc), std::conj (split[(size_t) k]));
+            work[(size_t) k] = fe + cpx { -fo.imag(), fo.real() }; // fe + i*fo
         }
         transform (true);
-        const float scale = 1.0f / (float) n;
-        for (int i = 0; i < n; ++i) out[i] = work[(size_t) i].real() * scale;
+        const float scale = 1.0f / (float) m;
+        for (int i = 0; i < m; ++i)
+        {
+            out[2 * i] = work[(size_t) i].real() * scale;
+            out[2 * i + 1] = work[(size_t) i].imag() * scale;
+        }
     }
 
 private:
     void transform (bool inv) noexcept
     {
         cpx* a = work.data();
-        for (int i = 0; i < n; ++i)
+        for (int i = 0; i < m; ++i)
         {
             const int r = bitrev[(size_t) i];
             if (i < r) std::swap (a[i], a[r]);
         }
-        for (int len = 2; len <= n; len <<= 1)
+        for (int len = 2; len <= m; len <<= 1)
         {
             const int half = len >> 1;
-            const int step = n / len;
-            for (int i = 0; i < n; i += len)
+            const int step = m / len;
+            for (int i = 0; i < m; i += len)
             {
                 for (int j = 0; j < half; ++j)
                 {
-                    cpx w = twiddle[(size_t) (j * step)];
+                    cpx w = twiddle[(size_t) (j * step)]; // j * step < m / 2 always
                     if (inv) w = std::conj (w);
                     const cpx u = a[i + j];
                     const cpx v = cmul (a[i + j + half], w);
@@ -106,8 +129,8 @@ private:
         }
     }
 
-    int n = 0;
-    std::vector<cpx> twiddle;
+    int n = 0, m = 0;
+    std::vector<cpx> twiddle, split;
     std::vector<int> bitrev;
     std::vector<cpx> work;
 };

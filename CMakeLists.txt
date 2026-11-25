@@ -18,6 +18,10 @@ add_library(ableaec_dsp STATIC src/dsp/AecCore.cpp)
 target_include_directories(ableaec_dsp PUBLIC src/dsp)
 set_target_properties(ableaec_dsp PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# offline WAV processor (also handy for checking your own recordings)
+add_executable(aec_wav tools/aec_wav.cpp)
+target_link_libraries(aec_wav PRIVATE ableaec_dsp)
+
 if(ABLEAEC_BUILD_TESTS)
     enable_testing()
     add_executable(aec_sim_test tests/AecSimTest.cpp)
@@ -63,6 +67,16 @@ if(ABLEAEC_BUILD_PLUGIN)
         src/plugin/PluginProcessor.cpp
         src/plugin/PluginEditor.cpp)
 
+    # UI font: Nanum Gothic subset (SIL OFL 1.1, see resources/fonts/OFL.txt), rebuilt by tools/make_ui_font.py
+    juce_add_binary_data(AbleAEC_Fonts SOURCES
+        resources/fonts/AbleAECUiKR-Regular.ttf
+        resources/fonts/AbleAECUiKR-Bold.ttf)
+    set_target_properties(AbleAEC_Fonts PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+    if(MSVC)
+        target_compile_options(AbleAEC PRIVATE /utf-8) # UiStrings.h holds UTF-8 Korean text
+    endif()
+
     target_compile_definitions(AbleAEC PUBLIC
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
@@ -72,6 +86,7 @@ if(ABLEAEC_BUILD_PLUGIN)
     target_link_libraries(AbleAEC
         PRIVATE
             ableaec_dsp
+            AbleAEC_Fonts
             juce::juce_audio_utils
         PUBLIC
             juce::juce_recommended_config_flags

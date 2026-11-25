@@ -6,6 +6,8 @@ tags: [ableton, setup]
 
 # Ableton Live 설정 가이드
 
+간단한 사용법은 [[user-manual|사용 설명서]]를 보세요. 이 문서는 자세한 설정입니다.
+
 [[README|AbleAEC]]를 세션 뷰의 마이크 트랙에 넣고, 스피커로 나가는 트랙을 사이드체인으로 연결하는 방법입니다.
 설치는 [[build|빌드 및 설치]]를 참고하세요.
 
@@ -54,24 +56,38 @@ flowchart TB
 
 | 파라미터 | 기본값 | 설명 |
 | --- | --- | --- |
-| Filter Length | 200 ms | 적응 필터가 덮는 에코 길이. **에코 지연 + 잔향 시간** 이상이어야 함. 넓은/울리는 방은 300–500 ms |
-| Adapt Speed | 50 % | 백그라운드 필터 학습 속도. 높을수록 빨리 수렴하지만 잡음에 민감 |
+| Filter Length | 250 ms | 적응 필터가 덮는 에코 길이. **에코 지연 + 잔향 시간** 이상이어야 함. 넓은/울리는 방은 300–500 ms |
+| Adapt Speed | 50 % | 학습 속도 배율 (칼만 이득). 높을수록 빨리 수렴하지만 노래 중 흔들림이 커짐 |
 | Ref Delay | 0 ms | 참조 신호를 미리 지연. 에코 지연이 매우 크면(예: 블루투스 스피커, 외부 처리) 그만큼 지정해서 필터 길이를 아낌 |
-| Residual Supp. | 50 % | 잔여 에코 억제 강도. 0 % = 끔. 높이면 에코는 더 줄지만 더블토크 시 말소리가 약간 뭉개질 수 있음 |
-| Supp. Floor | -30 dB | 잔여 에코 억제기의 최대 감쇄량 |
+| Residual Supp. | 20 % | 잔여 에코 억제 강도. 0 % = 끔. 높이면 반주는 더 줄지만 노래 중 보컬이 약간 뭉개질 수 있음 |
+| Supp. Floor | -18 dB | 잔여 에코 억제기의 최대 감쇄량 |
 | Output | Clean | `Clean`(AEC+억제), `Linear AEC only`, `Echo estimate`(추정 에코만, 확인용), `Raw mic`(원본, 지연만 맞춤) |
+| Latency | Quality (~21 ms) | `Quality`: hop 512 (48 kHz), 가장 안정적. `Low (~11 ms)`: hop 256 — 팝·EDM·말소리는 Quality와 비슷하지만 **피아노처럼 순음 위주인 음악에서는 크게 약함**, CPU 약 2배 ([[realistic-test#Low 모드 (지연 약 11 ms)|테스트 결과]]). 바꾸면 필터가 초기화됨 |
+| Reference | Stereo (L/R) | 스테레오 사이드체인을 L/R 따로 참조 (스피커 2대일 때 필수). `Mono (L+R)` 는 스피커 1대 또는 CPU 절약용 |
 | Freeze | off | 학습 정지 (현재 필터 유지) |
 | AEC Off | off | 처리 없이 원본 마이크를 내보냄 (지연은 동일하게 유지) |
 | Reset Filter | — | 학습된 필터 초기화 (마이크/스피커 위치를 크게 바꾼 뒤) |
+
+> [!note] 스피커 소리가 마이크에 잘 안 들어가는 경우
+> 스피커가 멀거나 마이크 인식 범위 밖이라 스피커 소리가 거의/전혀 안 들어가도 괜찮습니다. 에코가 없으면 AbleAEC는 목소리를 건드리지 않고 그대로 내보냅니다 (테스트: 보컬 SER 46.3 → 46.3 dB). 스피커 소리가 아주 약하게(목소리보다 20 dB 작게) 들어오는 경우에는 그것도 15–20 dB 더 줄이지만 목소리에 약간의 영향이 있으므로, 원래 깨끗하다면 `AEC Off` 도 선택지입니다.
+
+> [!tip] 노래 시작 전 반주를 10–20초 먼저 틀어두세요
+> 필터가 방의 반향을 배우는 데 반주 기준 수 초가 걸리고, 20초 전후에 가장 좋아집니다. 상태창의 `Echo reduction` 이 15 dB 이상이 된 뒤 녹음을 시작하면 좋습니다. 노래하는 동안에도 필터는 망가지지 않고 계속 학습합니다.
 
 자세한 알고리즘은 [[dsp-design|DSP 설계]] 참고.
 
 ## 화면 읽는 법
 
+![[plugin-ui-ko.png]]
+
+화면 언어는 오른쪽 위에서 `한국어` / `English` 로 바꿀 수 있습니다. 아래 표의 영어 이름과 한국어 화면 이름은 [[user-manual#6. 조절기: 역할과 비용|사용 설명서]]에 함께 정리되어 있습니다.
+
+
 - **Speaker / Mic in / Output** 미터: 사이드체인 참조, 마이크 입력, 처리 결과 레벨
-- **Sidechain**: `not connected`(사이드체인 꺼짐) / `connected, no signal` / `receiving`
+- **Sidechain**: `not connected`(사이드체인 꺼짐) / `connected, no signal` / `receiving (stereo)` / `receiving (mono)`
 - **Echo reduction (ERLE)**: 스피커 소리만 날 때 마이크 대비 출력이 얼마나 줄었는지(선형 필터 기준). 15 dB 이상이면 양호, 25 dB 이상이면 매우 좋음. 말하는 중에는 낮게 표시되는 것이 정상
 - **Echo delay**: 스피커 → 마이크 총 지연 추정값 (인터페이스 왕복 지연 + 음향 경로 + Ref Delay)
+- **Latency**: 플러그인이 호스트에 보고한 지연 (Quality 1024 샘플, Low 512 샘플 @48 kHz)
 
 ## 4. 문제 해결
 
@@ -79,13 +95,14 @@ flowchart TB
 | --- | --- |
 | `Sidechain: not connected` | 디바이스를 펼쳐 Sidechain 토글을 켜고 `Audio From`을 지정 |
 | `connected, no signal` | 스피커 트랙이 재생 중인지, 탭 위치가 Post Mixer인데 페이더가 내려가 있지 않은지 확인 |
-| ERLE가 계속 낮음 (< 6 dB) | Echo delay 값이 Filter Length 끝 근처라면 Filter Length를 늘리거나 Ref Delay 지정. 스피커/마이크가 다른 장치인지 확인 |
+| ERLE가 계속 낮음 (< 6 dB) | 반주를 20초 이상 틀어도 낮으면: Latency가 `Quality` 인지, Reference가 `Stereo` 인지 확인. Echo delay 값이 Filter Length 끝 근처라면 Filter Length를 늘리거나 Ref Delay 지정. 스피커/마이크가 다른 장치인지 확인 |
 | 말할 때 목소리가 뭉개짐 | Residual Supp.를 낮추거나 Supp. Floor를 -15 dB 정도로 올림 |
 | 에코가 조금 남음 | Residual Supp. 를 높임. 스피커 볼륨이 너무 커서 왜곡되면 볼륨을 낮춤 |
-| 모니터링이 약간 늦게 들림 | 플러그인 지연 512 샘플(48 kHz에서 약 10.7 ms). 녹음은 Live가 자동 보정 |
+| 모니터링이 약간 늦게 들림 | 플러그인 지연 1024 샘플(Quality, 48 kHz에서 약 21 ms). 녹음은 Live가 자동 보정. 모니터링은 오디오 인터페이스의 다이렉트 모니터링을 쓰는 것을 권장. `Low` 모드는 지연이 절반 (피아노류 음악에서는 약함) |
 
 ## 관련 문서
 
 - [[AbleAEC-MOC|문서 목차]]
 - [[dsp-design|DSP 설계]]
+- [[realistic-test|실환경 시뮬레이션 테스트]]
 - [[build|빌드 및 설치]]

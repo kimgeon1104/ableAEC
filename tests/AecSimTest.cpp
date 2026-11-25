@@ -69,15 +69,15 @@ int main()
     {
         const auto mode = modeIdx == 0 ? OutputMode::LinearOnly : OutputMode::Clean;
         AecCore aec;
-        aec.prepare (kSr, 500.0f);
+        aec.prepare (kSr, 500.0f, AecCore::blockSizeFor (kSr, false));
         AecSettings s;
         s.filterLengthMs = 250.0f;
         s.mode = mode;
         aec.setSettings (s);
 
         std::vector<float> out ((size_t) total, 0.0f);
-        const int L = AecCore::B; // algorithmic latency
-        for (int i = 0; i + AecCore::B <= total; i += AecCore::B)
+        const int L = aec.getBlockSize(); // algorithmic latency
+        for (int i = 0; i + L <= total; i += L)
             aec.processBlock (&farEnd[(size_t) i], &mic[(size_t) i], &out[(size_t) i]);
 
         // out[n] corresponds to input sample n - L
@@ -124,19 +124,20 @@ int main()
     // pass-through sanity: with no reference the output must equal the (delayed) mic
     {
         AecCore aec;
-        aec.prepare (kSr, 200.0f);
-        std::vector<float> zeros (AecCore::B, 0.0f), in (AecCore::B), o (AecCore::B);
+        aec.prepare (kSr, 200.0f, AecCore::blockSizeFor (kSr, true));
+        const int Bs = aec.getBlockSize();
+        std::vector<float> zeros ((size_t) Bs, 0.0f), in ((size_t) Bs), o ((size_t) Bs);
         std::vector<float> all, outAll;
         for (int blk = 0; blk < 50; ++blk)
         {
-            for (int i = 0; i < AecCore::B; ++i) in[(size_t) i] = nearEnd[(size_t) (aEnd + blk * AecCore::B + i)];
+            for (int i = 0; i < Bs; ++i) in[(size_t) i] = nearEnd[(size_t) (aEnd + blk * Bs + i)];
             aec.processBlock (zeros.data(), in.data(), o.data());
             all.insert (all.end(), in.begin(), in.end());
             outAll.insert (outAll.end(), o.begin(), o.end());
         }
         double maxErr = 0;
-        for (size_t i = AecCore::B; i < all.size(); ++i)
-            maxErr = std::max (maxErr, (double) std::abs (outAll[i] - all[i - AecCore::B]));
+        for (size_t i = (size_t) Bs; i < all.size(); ++i)
+            maxErr = std::max (maxErr, (double) std::abs (outAll[i] - all[i - (size_t) Bs]));
         std::printf ("[Passthrough] max |out - mic(delayed)| = %.2e\n", maxErr);
         if (maxErr > 1e-4) { std::printf ("  FAIL: passthrough not transparent\n"); ++failures; }
     }

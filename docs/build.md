@@ -69,6 +69,19 @@ xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/AbleAEC.compo
 
 이후 설정은 [[ableton-setup|Ableton 설정 가이드]] 참고.
 
+## UI 글꼴
+
+한국어 화면용 글꼴 `resources/fonts/AbleAECUiKR-{Regular,Bold}.ttf` 는 나눔고딕(SIL OFL 1.1, `resources/fonts/OFL.txt`)에서 **UI에 쓰는 글자만 남긴 서브셋**입니다 (각 약 75 KB). OFL 규정상 수정본은 원래 이름(Nanum)을 쓸 수 없어 `AbleAEC UI KR` 로 이름을 바꿨습니다.
+
+`src/plugin/UiStrings.h` 의 한국어 문구를 바꾸면 글꼴을 다시 만들어야 합니다. CI는 `--check` 로 빠진 글자가 있으면 실패합니다.
+
+```bash
+sudo apt-get install -y fonts-nanum
+python3 -m pip install fonttools
+python3 tools/make_ui_font.py          # 다시 만들기
+python3 tools/make_ui_font.py --check  # 빠진 글자 검사
+```
+
 ## CI 빌드
 
 `.github/workflows/build.yml` 이 push / PR 마다 Linux · Windows · macOS 에서 빌드하고 테스트를 돌립니다. 각 실행의 **Artifacts** 에서 `AbleAEC-windows`, `AbleAEC-macos` 를 받아 바로 설치할 수 있습니다.
@@ -78,19 +91,27 @@ xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/AbleAEC.compo
 | 테스트 | 내용 |
 | --- | --- |
 | `aec_sim_test` | 합성 음성 + 가상 방 응답으로 AEC 코어 검증: 단일 발화 ERLE, 더블토크 시 근단 음성 보존, 에코 경로 변화 후 재수렴, 지연 추정, 참조 없을 때 투명성 |
-| `plugin_host_test` | 빌드된 VST3를 DAW처럼 로드 → 사이드체인 버스 활성화, 보고된 지연과 실제 출력 정렬 일치, 플러그인 경유 에코 제거, 사이드체인 없을 때 통과 동작 |
+| `plugin_host_test` | 빌드된 VST3를 DAW처럼 로드 → 사이드체인 버스 활성화, 두 Latency 모드의 보고 지연과 실제 출력 정렬 일치, L≠R 스테레오 사이드체인에서 플러그인 경유 에코 제거 (스테레오 vs 모노 참조 비교), 사이드체인 없을 때 통과 동작 |
+| `tests/realistic/run_realistic.py` | 내 목소리(TTS) + 스피커 소리 6종(음악 3장르·백색잡음·말소리 2종) × 조건(스피커 1/2대, 왜곡, 큰 번짐, 약한 에코, 에코 없음, 에코 켜짐/꺼짐) 17개 시나리오를 가상 방에서 측정. CI(Linux)에서 `--check` 로 20개 회귀 기준치 검사. 자세한 내용: [[realistic-test]] |
 
 Linux에서 측정한 결과 예시:
 
 ```
-[LinearOnly] ERLE single-talk 23.8 dB, after path change 24.9 dB, double-talk SER -5.1 → 20.2 dB, delay 35.0 ms (true 35.0)
-[Clean]      ERLE single-talk 41.2 dB, after path change 43.8 dB
-plugin_host_test: latency 512 samples, ERLE through plugin 74.3 dB
+aec_sim_test      [LinearOnly] ERLE single-talk 23.3 dB, after path change 24.3 dB, double-talk SER -5.1 → 18.4 dB, delay 35.0 ms (true 35.0)
+                  [Clean]      ERLE single-talk 38.1 dB, after path change 41.0 dB
+plugin_host_test  latency Quality 1024 / Low 512 samples, ERLE stereo reference 64.1 dB vs mono sum 6.2 dB
+realistic         after singing (linear / clean): pop 27.1 / 39.5, EDM 26.7 / 38.8, piano 17.5 / 21.4,
+                  white noise 33.9 / 48.2, speech 25.3 / 31.9 dB; no echo: vocal untouched (46.3 → 46.3 dB)
 ```
 
-CPU 사용량 (48 kHz, 채널당, 단일 코어 기준): 필터 200 ms ≈ 2.3 %, 500 ms ≈ 6.7 %.
+CPU 사용량은 [[dsp-design#CPU (48 kHz, 마이크 채널당, 단일 코어)|DSP 설계]] 참고.
+
+### 오프라인 WAV 처리 도구
+
+`aec_wav` 는 플러그인과 같은 알고리즘으로 WAV 파일을 처리합니다. 사용법은 [[realistic-test#내 녹음으로 확인하기 (`aec_wav`)|실환경 테스트 문서]] 참고.
 
 ## 관련 문서
 
 - [[AbleAEC-MOC|문서 목차]]
 - [[dsp-design|DSP 설계]]
+- [[realistic-test|실환경 시뮬레이션 테스트]]

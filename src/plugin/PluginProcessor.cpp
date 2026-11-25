@@ -24,6 +24,8 @@ AbleAecProcessor::AbleAecProcessor()
     pFreeze = apvts.getRawParameterValue ("freeze");
     pMode = apvts.getRawParameterValue ("mode");
     pBypass = apvts.getRawParameterValue ("aecOff");
+    pLatency = apvts.getRawParameterValue ("latency");
+    pRefMode = apvts.getRawParameterValue ("refMode");
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout AbleAecProcessor::createLayout()
@@ -36,7 +38,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout AbleAecProcessor::createLayo
     auto pct = [] (float v, int) { return String (juce::roundToInt (v * 100.0f)) + " %"; };
 
     l.add (std::make_unique<AudioParameterFloat> (ParameterID { "filterLen", 1 }, "Filter Length",
-                                                  NormalisableRange<float> (20.0f, kMaxFilterMs, 1.0f, 0.6f), 200.0f,
+                                                  NormalisableRange<float> (20.0f, kMaxFilterMs, 1.0f, 0.6f), 250.0f,
                                                   AudioParameterFloatAttributes().withStringFromValueFunction (ms)));
     l.add (std::make_unique<AudioParameterFloat> (ParameterID { "step", 1 }, "Adapt Speed",
                                                   NormalisableRange<float> (0.05f, 1.0f, 0.01f), 0.5f,
@@ -45,15 +47,19 @@ juce::AudioProcessorValueTreeState::ParameterLayout AbleAecProcessor::createLayo
                                                   NormalisableRange<float> (0.0f, kMaxRefDelayMs, 0.1f, 0.5f), 0.0f,
                                                   AudioParameterFloatAttributes().withStringFromValueFunction (ms)));
     l.add (std::make_unique<AudioParameterFloat> (ParameterID { "resAmount", 1 }, "Residual Suppression",
-                                                  NormalisableRange<float> (0.0f, 1.0f, 0.01f), 0.5f,
+                                                  NormalisableRange<float> (0.0f, 1.0f, 0.01f), 0.2f,
                                                   AudioParameterFloatAttributes().withStringFromValueFunction (pct)));
     l.add (std::make_unique<AudioParameterFloat> (ParameterID { "resFloor", 1 }, "Suppression Floor",
-                                                  NormalisableRange<float> (-60.0f, 0.0f, 1.0f), -30.0f,
+                                                  NormalisableRange<float> (-60.0f, 0.0f, 1.0f), -18.0f,
                                                   AudioParameterFloatAttributes().withStringFromValueFunction (db)));
     l.add (std::make_unique<AudioParameterBool> (ParameterID { "freeze", 1 }, "Freeze Adaptation", false));
     l.add (std::make_unique<AudioParameterChoice> (ParameterID { "mode", 1 }, "Output",
                                                    StringArray { "Clean", "Linear AEC only", "Echo estimate", "Raw mic" }, 0));
     l.add (std::make_unique<AudioParameterBool> (ParameterID { "aecOff", 1 }, "AEC Off", false));
+    l.add (std::make_unique<AudioParameterChoice> (ParameterID { "latency", 1 }, "Latency",
+                                                   StringArray { "Quality (~21 ms)", "Low (~11 ms)" }, 0));
+    l.add (std::make_unique<AudioParameterChoice> (ParameterID { "refMode", 1 }, "Reference",
+                                                   StringArray { "Stereo (L/R)", "Mono (L+R)" }, 0));
     return l;
 }
 
@@ -76,23 +82,50 @@ bool AbleAecProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 void AbleAecProcessor::prepareToPlay (double sampleRate, int)
 {
     currentSampleRate = sampleRate;
-    for (auto& c : cores)
+    int maxB = 0;
+    for (int m = 0; m < kNumLatencyModes; ++m)
     {
-        c.prepare (sampleRate, kMaxFilterMs);
-        c.setSettings (readSettings());
+        const int b = ableaec::AecCore::blockSizeFor (sampleRate, m == 1);
+        maxB = juce::jmax (maxB, b);
+        for (auto& c : cores[(size_t) m])
+        {
+            c.prepare (sampleRate, kMaxFilterMs, b, ableaec::AecCore::kMaxRefs,
+                       ableaec::AecCore::partitionSizeFor (sampleRate, m == 1));
+            c.setSettings (readSettings());
+        }
+    }
+    for (auto& v : micIn) v.assign ((size_t) maxB, 0.0f);
+    for (auto& v : outFifo) v.assign ((size_t) maxB, 0.0f);
+    for (auto& v : refIn) v.assign ((size_t) maxB, 0.0f);
+
+    const auto delayLen = (size_t) std::ceil (kMaxRefDelayMs * 0.001 * sampleRate) + 2;
+    for (auto& v : refDelayLine) v.assign (delayLen, 0.0f);
+    refDelayWrite = 0;
+
+    activeRefs = 2;
+    channelsLinked = true;
+    activeMode = -1;
+    switchLatencyMode (juce::jlimit (0, kNumLatencyModes - 1, (int) pLatency->load()));
+}
+
+void AbleAecProcessor::switchLatencyMode (int mode) noexcept
+{
+    activeMode = mode;
+    for (auto& c : cores[(size_t) mode])
+    {
+        c.reset();
+        c.setActiveRefs (activeRefs);
     }
     channelsLinked = true;
-
-    for (auto& ch : micIn) ch.fill (0.0f);
-    for (auto& ch : outFifo) ch.fill (0.0f);
-    refIn.fill (0.0f);
+    B = cores[(size_t) mode][0].getBlockSize();
+    for (auto& v : micIn) std::fill (v.begin(), v.end(), 0.0f);
+    for (auto& v : outFifo) std::fill (v.begin(), v.end(), 0.0f);
+    for (auto& v : refIn) std::fill (v.begin(), v.end(), 0.0f);
     fifoPos = 0;
-
-    refDelayLine.assign ((size_t) std::ceil (kMaxRefDelayMs * 0.001 * sampleRate) + 2, 0.0f);
-    refDelayWrite = 0;
 
     // B samples of FIFO + B samples inside AecCore
     setLatencySamples (2 * B);
+    meters.latencySamples.store (2 * B);
 }
 
 ableaec::AecSettings AbleAecProcessor::readSettings() const noexcept
@@ -112,11 +145,16 @@ void AbleAecProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
 {
     juce::ScopedNoDenormals noDenormals;
 
+    const int wantedMode = juce::jlimit (0, kNumLatencyModes - 1, (int) pLatency->load());
+    if (wantedMode != activeMode)
+        switchLatencyMode (wantedMode);
+
+    auto& active = cores[(size_t) activeMode];
     if (resetRequested.exchange (false))
-        for (auto& c : cores) c.resetFilter();
+        for (auto& c : active) c.resetFilter();
 
     const auto settings = readSettings();
-    for (auto& c : cores) c.setSettings (settings);
+    for (auto& c : active) c.setSettings (settings);
 
     auto mainIn = getBusBuffer (buffer, true, 0);
     auto mainOut = getBusBuffer (buffer, false, 0);
@@ -133,24 +171,43 @@ void AbleAecProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
     }
     meters.sidechainConnected.store (numSc > 0);
 
-    const int delayLen = (int) refDelayLine.size();
+    // stereo reference when the sidechain is stereo and the user did not ask for a mono sum
+    const int wantedRefs = (numSc >= 2 && pRefMode->load() < 0.5f) ? 2 : 1;
+    if (wantedRefs != activeRefs)
+    {
+        activeRefs = wantedRefs;
+        for (auto& c : active) c.setActiveRefs (activeRefs);
+    }
+    meters.refChannels.store (numSc > 0 ? activeRefs : 0);
+
+    const int delayLen = (int) refDelayLine[0].size();
     const int refDelaySamples = juce::jlimit (0, delayLen - 1,
                                               (int) std::lround (pRefDelay->load() * 0.001 * currentSampleRate));
 
     for (int i = 0; i < numSamples; ++i)
     {
-        // mono reference = mean of sidechain channels, then optional delay
-        float r = 0.0f;
-        for (int c = 0; c < numSc; ++c) r += sc[c][i];
-        if (numSc > 1) r *= 1.0f / (float) numSc;
+        // reference channels (stereo, or mono sum), then the optional delay
+        float r[2] = { 0.0f, 0.0f };
+        if (activeRefs == 2)
+        {
+            r[0] = sc[0][i];
+            r[1] = sc[1][i];
+        }
+        else
+        {
+            for (int c = 0; c < numSc; ++c) r[0] += sc[c][i];
+            if (numSc > 1) r[0] *= 1.0f / (float) numSc;
+        }
 
-        refDelayLine[(size_t) refDelayWrite] = r;
         int readIdx = refDelayWrite - refDelaySamples;
         if (readIdx < 0) readIdx += delayLen;
-        refIn[(size_t) fifoPos] = refDelayLine[(size_t) readIdx];
+        for (int c = 0; c < activeRefs; ++c)
+        {
+            refDelayLine[(size_t) c][(size_t) refDelayWrite] = r[c];
+            refIn[(size_t) c][(size_t) fifoPos] = refDelayLine[(size_t) c][(size_t) readIdx];
+            refPeakAcc = juce::jmax (refPeakAcc, std::abs (r[c]));
+        }
         if (++refDelayWrite >= delayLen) refDelayWrite = 0;
-
-        refPeakAcc = juce::jmax (refPeakAcc, std::abs (r));
 
         for (int c = 0; c < numMic; ++c)
         {
@@ -179,34 +236,39 @@ void AbleAecProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
 
 void AbleAecProcessor::runBlock (int numMic) noexcept
 {
+    auto& active = cores[(size_t) activeMode];
+    const float* refs[2] = { refIn[0].data(), refIn[1].data() };
+
     // stereo tracks fed by a mono mic carry identical channels: process once and copy
-    bool identical = numMic == 2
-                     && std::memcmp (micIn[0].data(), micIn[1].data(), sizeof (float) * (size_t) B) == 0;
+    const bool identical = numMic == 2
+                           && std::memcmp (micIn[0].data(), micIn[1].data(), sizeof (float) * (size_t) B) == 0;
     if (numMic == 2 && channelsLinked && ! identical)
-        cores[1].reset(); // channel 1 was idle, start it fresh
+        active[1].reset(); // channel 1 was idle, start it fresh
     channelsLinked = numMic < 2 || identical;
 
-    cores[0].processBlock (refIn.data(), micIn[0].data(), outFifo[0].data());
+    active[0].processBlock (refs, micIn[0].data(), outFifo[0].data());
     if (numMic == 2)
     {
         if (channelsLinked)
-            outFifo[1] = outFifo[0];
+            std::copy (outFifo[0].begin(), outFifo[0].begin() + B, outFifo[1].begin());
         else
-            cores[1].processBlock (refIn.data(), micIn[1].data(), outFifo[1].data());
+            active[1].processBlock (refs, micIn[1].data(), outFifo[1].data());
     }
 
     // meters (channel 0 is representative)
-    const auto& c0 = cores[0];
+    const auto& c0 = active[0];
     meters.erleDb.store (c0.getErleDb());
     meters.echoDelayMs.store (c0.getEchoDelayMs() + pRefDelay->load());
     meters.leakage.store (c0.getLeakage());
     meters.converged.store (c0.isConverged());
 
-    auto decay = [] (std::atomic<float>& m, float& acc)
+    // fall ~28 dB/s regardless of block size
+    const float fall = 28.0f * (float) B / (float) currentSampleRate;
+    auto decay = [fall] (std::atomic<float>& m, float& acc)
     {
         const float db = toDb (acc);
         const float prev = m.load();
-        m.store (db > prev ? db : juce::jmax (db, prev - 0.15f)); // ~28 dB/s fall at 48 kHz
+        m.store (db > prev ? db : juce::jmax (db, prev - fall));
         acc = 0.0f;
     };
     decay (meters.refLevelDb, refPeakAcc);
@@ -215,6 +277,22 @@ void AbleAecProcessor::runBlock (int numMic) noexcept
 }
 
 juce::AudioProcessorEditor* AbleAecProcessor::createEditor() { return new AbleAecEditor (*this); }
+
+ui::Lang AbleAecProcessor::getUiLanguage() const
+{
+    const auto v = apvts.state.getProperty ("uiLanguage").toString();
+    if (v == "ko") return ui::Lang::ko;
+    if (v == "en") return ui::Lang::en;
+    return juce::SystemStats::getUserLanguage().startsWithIgnoreCase ("ko")
+                   || juce::SystemStats::getDisplayLanguage().startsWithIgnoreCase ("ko")
+               ? ui::Lang::ko
+               : ui::Lang::en;
+}
+
+void AbleAecProcessor::setUiLanguage (ui::Lang l)
+{
+    apvts.state.setProperty ("uiLanguage", l == ui::Lang::ko ? "ko" : "en", nullptr);
+}
 
 void AbleAecProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
