@@ -348,16 +348,16 @@ SPK_MONO = (3.0, 4.1, 1.6)
 
 
 def simulate(name, far, vocal, stereo_speakers=True, distortion=False, noise_db=-75, echo_to_vocal_db=0.0,
-             latency=2 * 256 + 60, echo_segments=None):
+             latency=2 * 256 + 60, echo_segments=None, rt60=0.35):
     """echo_to_vocal_db=None: the loudspeakers do not reach the mic at all.
     echo_segments: [(start_s, end_s), ...] where the echo is audible (e.g. performer moving away)."""
     feed = far.copy()
     if distortion:
         feed = np.tanh(2.0 * feed) / 2.0
     if stereo_speakers:
-        echo = sum(np.convolve(feed[c], rir(SPK_STEREO[c], MIC_POS))[:N] for c in range(2))
+        echo = sum(np.convolve(feed[c], rir(SPK_STEREO[c], MIC_POS, rt60=rt60, length=1.3 * rt60))[:N] for c in range(2))
     else:
-        echo = np.convolve(0.5 * (feed[0] + feed[1]), rir(SPK_MONO, MIC_POS))[:N]
+        echo = np.convolve(0.5 * (feed[0] + feed[1]), rir(SPK_MONO, MIC_POS, rt60=rt60, length=1.3 * rt60))[:N]
     echo = np.concatenate([np.zeros(latency), echo])[:N]  # audio-interface out+in latency
 
     v = np.convolve(vocal, rir(MOUTH, MIC_POS))[:N]
@@ -439,6 +439,9 @@ SCENARIOS = [
     ("music_pop__echo_on_off", "music_pop", dict(echo_segments=[(0, 5), (10, 14), (22, 26)])),
     ("speech_mono__weak_echo", "speech_mono", dict(echo_to_vocal_db=-20.0)),
     ("speech_mono__no_echo", "speech_mono", dict(echo_to_vocal_db=None)),
+    # room size: a reverberant room needs a long filter, a dry room a short one
+    ("music_pop__reverb_room", "music_pop", dict(rt60=0.8)),
+    ("music_pop__dry_room", "music_pop", dict(rt60=0.15)),
 ]
 
 # Regression thresholds for the default configuration (Quality, stereo reference); a few dB of margin.

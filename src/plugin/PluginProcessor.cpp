@@ -24,6 +24,7 @@ AbleAecProcessor::AbleAecProcessor()
     pFreeze = apvts.getRawParameterValue ("freeze");
     pMode = apvts.getRawParameterValue ("mode");
     pBypass = apvts.getRawParameterValue ("aecOff");
+    pAuto = apvts.getRawParameterValue ("auto");
     pLatency = apvts.getRawParameterValue ("latency");
     pRefMode = apvts.getRawParameterValue ("refMode");
 }
@@ -56,6 +57,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout AbleAecProcessor::createLayo
     l.add (std::make_unique<AudioParameterChoice> (ParameterID { "mode", 1 }, "Output",
                                                    StringArray { "Clean", "Linear AEC only", "Echo estimate", "Raw mic" }, 0));
     l.add (std::make_unique<AudioParameterBool> (ParameterID { "aecOff", 1 }, "AEC Off", false));
+    l.add (std::make_unique<AudioParameterBool> (ParameterID { "auto", 1 }, "Auto", false));
     l.add (std::make_unique<AudioParameterChoice> (ParameterID { "latency", 1 }, "Latency",
                                                    StringArray { "Quality (~21 ms)", "Low (~11 ms)" }, 0));
     l.add (std::make_unique<AudioParameterChoice> (ParameterID { "refMode", 1 }, "Reference",
@@ -136,6 +138,7 @@ ableaec::AecSettings AbleAecProcessor::readSettings() const noexcept
     s.resAmount = pResAmount->load();
     s.resFloorDb = pResFloor->load();
     s.freeze = pFreeze->load() > 0.5f;
+    s.autoTune = pAuto->load() > 0.5f;
     s.mode = pBypass->load() > 0.5f ? ableaec::OutputMode::RawMic
                                     : (ableaec::OutputMode) juce::jlimit (0, 3, (int) pMode->load());
     return s;
@@ -261,6 +264,10 @@ void AbleAecProcessor::runBlock (int numMic) noexcept
     meters.echoDelayMs.store (c0.getEchoDelayMs() + pRefDelay->load());
     meters.leakage.store (c0.getLeakage());
     meters.converged.store (c0.isConverged());
+    meters.effFilterMs.store (c0.getEffectiveFilterLengthMs());
+    meters.effResAmount.store (c0.getEffectiveResAmount());
+    meters.effResFloorDb.store (c0.getEffectiveResFloorDb());
+    meters.echoPresent.store (c0.isEchoPresent());
 
     // fall ~28 dB/s regardless of block size
     const float fall = 28.0f * (float) B / (float) currentSampleRate;

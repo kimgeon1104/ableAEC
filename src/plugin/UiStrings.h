@@ -29,6 +29,7 @@ enum class Str
     tipFilterLen, tipStep, tipRefDelay, tipResAmount, tipResFloor,
     tipMode, tipLatency, tipRefMode, tipFreeze, tipAecOff, tipReset, tipGuide, tipLanguage,
     guideTitle,
+    autoMode, autoSuffix, tipAuto, stAuto, autoOff, autoOnEcho, autoOnNoEcho, autoLearning,
     count
 };
 
@@ -107,6 +108,17 @@ inline const Entry& entry (Str s)
         { "Open the user guide.", "사용 설명서를 엽니다." },
         { "Interface language.", "화면 언어를 바꿉니다." },
         { "AbleAEC user guide", "AbleAEC 사용 설명서" },
+        { "Auto", "자동" },
+        { " (Auto)", " (자동)" },
+        { "Let the plugin set Filter Length, Residual Supp. and Supp. Floor from what it measures: a longer filter in echoey rooms, "
+          "gentler suppression when little echo reaches the mic. The knobs follow and cannot be turned while Auto is on. No extra latency.",
+          "필터 길이, 잔여 억제, 억제 한계를 측정값에 맞춰 플러그인이 정합니다. 울리는 방에서는 필터를 늘리고, 마이크에 에코가 적으면 억제를 약하게 합니다. "
+          "켜 두면 노브가 따라 움직이고 직접 돌릴 수 없습니다. 지연은 늘지 않습니다." },
+        { "Auto", "자동" },
+        { "off", "꺼짐" },
+        { "on, echo detected", "켜짐, 에코 감지" },
+        { "on, no echo: suppression off", "켜짐, 에코 없음: 억제 끔" },
+        { "on, learning...", "켜짐, 학습 중..." },
     };
     static_assert (sizeof (table) / sizeof (table[0]) == (size_t) Str::count, "missing UI string");
     return table[(size_t) s];
@@ -156,6 +168,10 @@ inline juce::String guide (Lang l)
             "비용: 저지연은 CPU 약 2배(약 15 %), 피아노류 음악에서 성능 저하. 바꾸면 필터 초기화.\n"
             "- 참조: 스테레오(스피커 2대일 때 필요) / 모노(스피커 1대). 비용: 모노가 CPU 약 35 % 적음(약 5 %). 스피커 2대에 모노를 쓰면 에코가 덜 지워짐.\n"
             "- 학습 멈춤: 지금 필터를 유지. 비용: CPU 절반(약 4 %). 마이크/스피커가 움직이면 따라가지 못함.\n"
+            "- 자동: 필터 길이, 잔여 억제, 억제 한계를 플러그인이 정합니다. 필터 길이는 방의 울림이 필터보다 길면 500 ms까지 늘립니다"
+            "(노브 값보다 줄이지는 않음). 잔여 억제는 마이크 속 에코가 많으면 기본값(20 %), 적을수록 약하게, 에코가 없으면 끕니다. "
+            "비용: 지연 변화 없음, CPU는 필터가 늘어난 만큼만 늘어남. 스피커 소리가 8초 이상 나온 뒤부터 길이를 바꿉니다. "
+            "울리는 방에서 효과가 크고(테스트 +8 dB), 보통 방에서는 수동과 거의 같습니다.\n"
             "- AEC 끄기: 원본 그대로 출력(지연은 같음). 필터 초기화: 학습 내용 삭제, 다시 배우는 동안(수 초) 에코가 남음.\n"
             "\n"
             "# GPU를 쓰나요?\n"
@@ -211,6 +227,11 @@ inline juce::String guide (Lang l)
         "Cost: Low uses about twice the CPU (about 15 %) and is weaker on piano-like music. Changing it resets the filter.\n"
         "- Reference: Stereo (needed with two speakers) / Mono (one speaker). Cost: Mono uses about 35 % less CPU (about 5 %); with two speakers it removes less echo.\n"
         "- Freeze keeps the current filter. Cost: halves the CPU (about 4 %), but it cannot follow a moved mic or speaker.\n"
+        "- Auto lets the plugin set Filter Length, Residual Supp. and Supp. Floor. The filter grows (up to 500 ms) when the room's reverb "
+        "is longer than the filter, never below the knob value. Residual suppression stays at the default (20 %) while there is plenty of "
+        "echo in the mic, gets gentler as the echo gets weaker, and turns off when no echo reaches the mic. Cost: no latency change; CPU "
+        "only grows with the filter. Length changes start after 8 s of speaker sound. Biggest gain in echoey rooms (+8 dB in tests); in "
+        "ordinary rooms about the same as manual.\n"
         "- AEC Off passes the mic through (same latency). Reset Filter forgets what was learned; the echo comes back for a few seconds while it re-learns.\n"
         "\n"
         "# Does it use the GPU?\n"

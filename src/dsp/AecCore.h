@@ -43,6 +43,7 @@ struct AecSettings
     float resAmount = 0.2f;        // residual echo suppression strength (0..1)
     float resFloorDb = -18.0f;     // max attenuation of the suppressor
     bool freeze = false;           // stop adapting (keep current filter)
+    bool autoTune = false;         // let the core choose filter length and residual suppression
     OutputMode mode = OutputMode::Clean;
 };
 
@@ -89,6 +90,12 @@ public:
     bool isReferenceActive() const noexcept { return refActive; }
     int getNumPartitions() const noexcept { return P; }
 
+    // Values in effect (equal to the settings unless autoTune chose them).
+    float getEffectiveFilterLengthMs() const noexcept { return (float) (P * (double) L * 1000.0 / sr); }
+    float getEffectiveResAmount() const noexcept { return settings.autoTune ? autoRes : settings.resAmount; }
+    float getEffectiveResFloorDb() const noexcept { return settings.autoTune ? autoFloorDb : settings.resFloorDb; }
+    bool isEchoPresent() const noexcept { return echoPresent; }
+
 private:
     size_t widx (int c, int p) const noexcept { return ((size_t) c * (size_t) Pmax + (size_t) p) * (size_t) K; }
     // reference spectrum of channel c for partition p (= p * O hops ago)
@@ -101,6 +108,9 @@ private:
     void constrainPartition (int c, int p) noexcept;
     void updateDelayEstimate() noexcept;
     void residualSuppress (const float* e, const float* y, float* out, bool bypassGain) noexcept;
+    void applyFilterLength (float ms) noexcept;
+    void autoTuneStep (float micEnergy) noexcept;
+    int tailPartition() noexcept;
 
     double sr = 48000.0;
     int B = 256;          // hop (block) size
@@ -135,6 +145,12 @@ private:
     int constrainIdx = 0, blockCounter = 0;
     double micPowS = 1e-9, errPowS = 1e-9;
     float erleDb = 0.0f, echoDelayMs = 0.0f;
+
+    // auto tuning
+    float autoFilterMs = 250.0f, autoRes = 0.2f, autoFloorDb = -18.0f;
+    double erlePeak = 0.0, echoRatioS = 0.0, activeSeconds = 0.0;
+    bool echoPresent = false;
+    int autoCounter = 0, growVotes = 0, shrinkVotes = 0;
 
     // residual suppressor (own STFT of size 2B)
     Fft fftRes;

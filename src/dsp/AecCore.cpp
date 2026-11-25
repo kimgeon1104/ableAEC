@@ -125,6 +125,11 @@ void AecCore::resetFilter() noexcept
     micPowS = errPowS = 1e-9;
     erleDb = 0.0f;
     echoDelayMs = 0.0f;
+    erlePeak = 0.0;
+    echoRatioS = 0.0;
+    activeSeconds = 0.0;
+    echoPresent = false;
+    growVotes = shrinkVotes = 0;
 }
 
 void AecCore::setActiveRefs (int n) noexcept
@@ -139,8 +144,20 @@ void AecCore::setActiveRefs (int n) noexcept
 
 void AecCore::setSettings (const AecSettings& s) noexcept
 {
+    if (s.autoTune && ! settings.autoTune) // entering auto: start from the user's values
+    {
+        autoFilterMs = s.filterLengthMs;
+        autoRes = s.resAmount;
+        autoFloorDb = s.resFloorDb;
+        growVotes = shrinkVotes = 0;
+    }
     settings = s;
-    const int newP = std::clamp ((int) std::ceil (s.filterLengthMs * 0.001 * sr / L), 1, Pmax);
+    applyFilterLength (s.autoTune ? autoFilterMs : s.filterLengthMs);
+}
+
+void AecCore::applyFilterLength (float ms) noexcept
+{
+    const int newP = std::clamp ((int) std::ceil (ms * 0.001 * sr / L), 1, Pmax);
     if (newP < P) // discard taps that are no longer used
         for (int c = 0; c < C; ++c)
             for (int p = newP; p < P; ++p)
@@ -382,11 +399,14 @@ void AecCore::processBlock (const float* const* refs, const float* mic, float* o
         updateDelayEstimate();
     }
 
+    if (settings.autoTune)
+        autoTuneStep (sd);
+
     // ---------------------------------------------------------------- 7. output
     switch (settings.mode)
     {
         case OutputMode::Clean:
-            residualSuppress (eF.data(), yF.data(), out, settings.resAmount <= 0.0f);
+            residualSuppress (eF.data(), yF.data(), out, getEffectiveResAmount() <= 0.0f);
             break;
         case OutputMode::LinearOnly:
             residualSuppress (eF.data(), yF.data(), out, true);
@@ -403,6 +423,108 @@ void AecCore::processBlock (const float* const* refs, const float* mic, float* o
     }
     std::copy (yF.begin(), yF.end(), prevY.begin());
     std::copy (curMic, curMic + B, prevMic.begin());
+}
+
+// Where the learned echo tail meets the filter's estimation-noise floor, as a partition index.
+// After the strongest partition the energy decays with the room's reverb until it reaches a floor
+// set by estimation noise (singing, background noise), typically -20..-30 dB. The floor is the
+// 25th percentile of the partitions after the peak; the tail ends at the first partition within
+// 3 dB of it. Returns P - 1 when the decay has not reached a clear floor (the filter is too short).
+// By Parseval, a partition's frequency-domain energy is its impulse response energy.
+int AecCore::tailPartition() noexcept
+{
+    double perPart[512], sorted[512];
+    const int np = std::min (P, 512);
+    int peakIdx = 0;
+    for (int p = 0; p < np; ++p)
+    {
+        double e = 0.0;
+        for (int c = 0; c < Ca; ++c)
+        {
+            const cpx* w = Wf (c, p);
+            for (int k = 0; k < K; ++k) e += norm2 (w[k]);
+        }
+        perPart[p] = e;
+        if (e > perPart[peakIdx]) peakIdx = p;
+    }
+    if (perPart[peakIdx] <= 0.0) return -1;
+    const int n = np - peakIdx - 1;
+    if (n < 3) return np - 1;
+    for (int i = 0; i < n; ++i) sorted[i] = perPart[peakIdx + 1 + i];
+    std::sort (sorted, sorted + n);
+    const double floorE = sorted[n / 4];
+    if (floorE > perPart[peakIdx] * 0.03) // no decay of at least 15 dB: no clear floor
+    {
+        // A real reverb tail that is longer than the filter decays smoothly right up to the end.
+        // Ill-conditioned material (identical L/R, pure tones) leaves irregular, non-decaying energy
+        // in the late partitions instead; growing the filter for that only makes things worse.
+        const bool smoothDecayToEnd = perPart[np - 1] < perPart[np - 2] && perPart[np - 2] < perPart[np - 3];
+        return smoothDecayToEnd ? np - 1 : -1;
+    }
+    for (int p = peakIdx + 1; p < np; ++p)
+        if (perPart[p] < 2.0 * floorE) return p;
+    return np - 1;
+}
+
+// Auto mode: adjusts filter length and residual suppression from what the filter has learned.
+//  - Filter length: grows one partition (up to 500 ms) when the learned echo tail still decays
+//    smoothly at the end of the filter, i.e. the room's reverb is longer than the filter. It never
+//    goes below the knob value. Each step needs three agreeing checks ~0.5 s apart.
+//  - Residual suppression: follows how much echo is in the mic (echo estimate vs mic over ~2 s).
+//    Plenty of echo -> the standard 20 % / -18 dB; the weaker the echo, the gentler, down to off
+//    when no echo reaches the mic, so the voice is never processed harder than the echo warrants.
+//  - The filter only grows while the echo is not yet well cancelled (< 15 dB): if it is, the
+//    filter length is not what limits it. Length changes start after ~8 s of speaker sound.
+void AecCore::autoTuneStep (float micEnergy) noexcept
+{
+    const double hopSec = (double) B / sr;
+    erlePeak = std::max ((double) erleDb, erlePeak - 1.0 * hopSec); // decays 1 dB/s
+    if (refActive)
+    {
+        activeSeconds += hopSec;
+        const double ratio = (energy (yF.data(), B) + 1e-12) / (micEnergy + 1e-12);
+        const double a = std::min (1.0, hopSec / 2.0); // ~2 s
+        echoRatioS += a * (ratio - echoRatioS);
+    }
+    // echo estimate within 30 dB of the mic, with hysteresis
+    echoPresent = echoPresent ? echoRatioS > 1.0e-3 * 0.5 : echoRatioS > 1.0e-3;
+
+    if (++autoCounter < std::max (1, (int) std::lround (0.5 / hopSec)))
+        return;
+    autoCounter = 0;
+
+    // residual suppression
+    if (! echoPresent)
+    {
+        autoRes = 0.0f;
+        autoFloorDb = -12.0f;
+    }
+    else
+    {
+        const double ratioDb = 10.0 * std::log10 (echoRatioS + 1e-12);           // echo share of the mic
+        autoRes = 0.2f * (float) std::clamp ((ratioDb + 20.0) / 12.0, 0.0, 1.0); // >= -8 dB -> 20 %, <= -20 dB -> 0
+        autoFloorDb = -18.0f;
+    }
+
+    // filter length (only once the filter has learned something)
+    // ... and only after ~8 s of speaker sound, when the filter has settled
+    if (! refActive || settings.freeze || erlePeak < 10.0 || ! echoPresent || activeSeconds < 8.0)
+        return;
+    const int tail = tailPartition();
+    if (tail < 0) { growVotes = shrinkVotes = 0; return; } // no reliable reading
+    const double partMs = (double) L * 1000.0 / sr;
+    const int wanted = std::clamp (tail + 2, (int) std::ceil (100.0 / partMs), Pmax); // + one partition of margin
+    // Grow only, never below the knob: shrinking saves little CPU and in tests cost up to 3 dB.
+    if (wanted > P && erlePeak < 15.0) // and only while cancellation is still poor
+    {
+        if (++growVotes >= 3) { autoFilterMs = (float) ((P + 1) * partMs); growVotes = 0; }
+    }
+    else
+    {
+        growVotes = 0;
+    }
+    autoFilterMs = std::clamp (autoFilterMs, settings.filterLengthMs, 500.0f);
+    applyFilterLength (autoFilterMs);
 }
 
 void AecCore::constrainPartition (int c, int p) noexcept
@@ -447,8 +569,8 @@ void AecCore::residualSuppress (const float* e, const float* y, float* out, bool
         for (int i = 0; i < Nr; ++i) resFrame[(size_t) i] = resY[(size_t) i] * window[(size_t) i];
         fftRes.forward (resFrame.data(), RY.data());
 
-        const float floorGain = std::pow (10.0f, settings.resFloorDb / 20.0f);
-        const float over = 4.0f * settings.resAmount;
+        const float floorGain = std::pow (10.0f, getEffectiveResFloorDb() / 20.0f);
+        const float over = 4.0f * getEffectiveResAmount();
         const float leakRes = std::max (leak, 0.02f);
         for (int k = 0; k < Kr; ++k)
         {

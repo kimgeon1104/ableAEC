@@ -41,6 +41,7 @@ private:
     };
 
     void setupKnob (Knob&, const juce::String& paramId);
+    juce::String knobParamId (const Knob&) const;
     void applyLanguage();
     juce::String t (ui::Str s) const { return ui::tr (s, lang); }
     juce::FontOptions font (float height, bool bold = false) const;
@@ -51,10 +52,12 @@ private:
 
     Knob filterLen, step, refDelay, resAmount, resFloor;
 
-    juce::ToggleButton freezeButton, offButton;
+    juce::ToggleButton freezeButton, offButton, autoButton;
     juce::ComboBox modeBox, latencyBox, refModeBox, langBox;
     juce::TextButton resetButton, guideButton;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> freezeAtt, offAtt;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> freezeAtt, offAtt, autoAtt;
+    bool autoShown = false;
+    void setAutoKnobs (bool on);
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> modeAtt, latencyAtt, refModeAtt;
 
     GuidePanel guidePanel { *this };
@@ -62,7 +65,7 @@ private:
 
     // cached meter values for painting
     float erle = 0, delayMs = 0, refDb = -120, micDb = -120, outDb = -120;
-    bool converged = false, sidechain = false;
+    bool converged = false, sidechain = false, echoPresent = false;
     int refChannels = 0, latencySamples = 0;
 
     juce::Rectangle<int> meterArea, statusArea;

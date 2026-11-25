@@ -32,7 +32,7 @@ AbleAecEditor::AbleAecEditor (AbleAecProcessor& p) : AudioProcessorEditor (&p), 
     setupKnob (resAmount, "resAmount");
     setupKnob (resFloor, "resFloor");
 
-    for (auto* b : { &freezeButton, &offButton })
+    for (auto* b : { &freezeButton, &offButton, &autoButton })
     {
         b->setColour (juce::ToggleButton::textColourId, kText);
         b->setColour (juce::ToggleButton::tickColourId, kAccent);
@@ -40,6 +40,8 @@ AbleAecEditor::AbleAecEditor (AbleAecProcessor& p) : AudioProcessorEditor (&p), 
     }
     freezeAtt = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "freeze", freezeButton);
     offAtt = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "aecOff", offButton);
+    autoAtt = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "auto", autoButton);
+    autoButton.setColour (juce::ToggleButton::tickColourId, kGood);
 
     auto setupBox = [this] (juce::ComboBox& box, const juce::String& paramId,
                             std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment>& att)
@@ -76,7 +78,8 @@ AbleAecEditor::AbleAecEditor (AbleAecProcessor& p) : AudioProcessorEditor (&p), 
     addChildComponent (guidePanel);
 
     applyLanguage();
-    setSize (640, 410);
+    setAutoKnobs (autoButton.getToggleState());
+    setSize (640, 430);
     startTimerHz (15);
 }
 
@@ -113,7 +116,9 @@ void AbleAecEditor::applyLanguage()
     };
     for (auto& [k, s] : knobs)
     {
-        k->label.setText (t (s.first), juce::dontSendNotification);
+        const bool autoDriven = autoShown && (k == &filterLen || k == &resAmount || k == &resFloor);
+        k->label.setText (t (s.first) + (autoDriven ? t (Str::autoSuffix) : juce::String()), juce::dontSendNotification);
+        k->label.setColour (juce::Label::textColourId, autoDriven ? kGood : kText);
         k->label.setFont (font (14.0f));
         k->label.setTooltip (t (s.second));
         k->slider.setTooltip (t (s.second));
@@ -123,6 +128,8 @@ void AbleAecEditor::applyLanguage()
     freezeButton.setTooltip (t (Str::tipFreeze));
     offButton.setButtonText (t (Str::aecOff));
     offButton.setTooltip (t (Str::tipAecOff));
+    autoButton.setButtonText (t (Str::autoMode));
+    autoButton.setTooltip (t (Str::tipAuto));
     resetButton.setButtonText (t (Str::resetFilter));
     resetButton.setTooltip (t (Str::tipReset));
     guideButton.setButtonText (t (Str::guide));
@@ -149,9 +156,45 @@ void AbleAecEditor::applyLanguage()
     repaint();
 }
 
+juce::String AbleAecEditor::knobParamId (const Knob& k) const
+{
+    if (&k == &filterLen) return "filterLen";
+    if (&k == &resAmount) return "resAmount";
+    if (&k == &resFloor) return "resFloor";
+    if (&k == &step) return "step";
+    return "refDelay";
+}
+
+// In Auto the three driven knobs are detached from their parameters (so the user's values stay as
+// they were) and show what the plugin chose; switching Auto off re-attaches them.
+void AbleAecEditor::setAutoKnobs (bool on)
+{
+    if (on == autoShown) return;
+    autoShown = on;
+    for (auto* k : { &filterLen, &resAmount, &resFloor })
+    {
+        if (on)
+            k->attachment.reset();
+        else
+            k->attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (proc.apvts, knobParamId (*k), k->slider);
+        k->slider.setInterceptsMouseClicks (! on, ! on); // Auto drives it; the user cannot turn it
+        k->slider.setColour (juce::Slider::rotarySliderFillColourId, on ? kGood : kAccent);
+        k->slider.setColour (juce::Slider::textBoxTextColourId, on ? kGood : kText);
+    }
+    applyLanguage();
+}
+
 void AbleAecEditor::timerCallback()
 {
     auto& m = proc.meters;
+    setAutoKnobs (autoButton.getToggleState());
+    if (autoShown)
+    {
+        filterLen.slider.setValue (m.effFilterMs.load(), juce::dontSendNotification);
+        resAmount.slider.setValue (m.effResAmount.load(), juce::dontSendNotification);
+        resFloor.slider.setValue (m.effResFloorDb.load(), juce::dontSendNotification);
+    }
+    echoPresent = m.echoPresent.load();
     erle = m.erleDb.load();
     delayMs = m.echoDelayMs.load();
     refDb = m.refLevelDb.load();
@@ -232,6 +275,12 @@ void AbleAecEditor::paint (juce::Graphics& g)
     const double sr = proc.getSampleRate() > 0.0 ? proc.getSampleRate() : 48000.0;
     line (t (Str::stLatency), juce::String (latencySamples) + " " + t (Str::samples) + " ("
                                   + juce::String (latencySamples * 1000.0 / sr, 1) + " ms)", kText);
+    if (! autoShown)
+        line (t (Str::stAuto), t (Str::autoOff), kText.withAlpha (0.7f));
+    else if (! converged && ! echoPresent)
+        line (t (Str::stAuto), t (refPresent ? Str::autoLearning : Str::autoOnNoEcho), kText);
+    else
+        line (t (Str::stAuto), t (echoPresent ? Str::autoOnEcho : Str::autoOnNoEcho), kGood);
 }
 
 void AbleAecEditor::resized()
@@ -265,6 +314,7 @@ void AbleAecEditor::resized()
     auto controls2 = r.removeFromTop (26);
     freezeButton.setBounds (controls2.removeFromLeft (110));
     offButton.setBounds (controls2.removeFromLeft (110));
+    autoButton.setBounds (controls2.removeFromLeft (100));
     resetButton.setBounds (controls2.removeFromRight (120));
 
     r.removeFromTop (10);

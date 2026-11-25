@@ -60,6 +60,9 @@ public:
         std::atomic<float> refLevelDb { -120.0f }, micLevelDb { -120.0f }, outLevelDb { -120.0f };
         std::atomic<bool> converged { false }, sidechainConnected { false };
         std::atomic<int> refChannels { 0 }, latencySamples { 0 };
+        // values in effect (what Auto chose, or the knobs)
+        std::atomic<float> effFilterMs { 250.0f }, effResAmount { 0.2f }, effResFloorDb { -18.0f };
+        std::atomic<bool> echoPresent { false };
     } meters;
 
 private:
@@ -98,6 +101,7 @@ private:
     std::atomic<float>* pFreeze = nullptr;
     std::atomic<float>* pMode = nullptr;
     std::atomic<float>* pBypass = nullptr;
+    std::atomic<float>* pAuto = nullptr;
     std::atomic<float>* pLatency = nullptr;
     std::atomic<float>* pRefMode = nullptr;
 
