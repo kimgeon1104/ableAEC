@@ -1,0 +1,50 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (e.g. v0.1.0). Created on the selected commit if it does not exist.
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      package: true
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: out
+
+      - name: Release notes
+        run: |
+          ls -l out
+          f=".github/release-notes/$TAG.md"
+          if [ -f "$f" ]; then cp "$f" notes.md; else echo "AbleAEC $TAG" > notes.md; fi
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          target_commitish: ${{ github.sha }}
+          name: AbleAEC ${{ env.TAG }}
+          body_path: notes.md
+          files: out/*.zip
+          fail_on_unmatched_files: true

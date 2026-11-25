@@ -5,6 +5,12 @@ on:
     branches: [main, "ccr-*"]
   pull_request:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      package:
+        description: Also upload a zip per OS for a release
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -64,3 +70,20 @@ jobs:
         with:
           name: AbleAEC-${{ matrix.name }}
           path: dist
+
+      - name: Package release zip
+        if: inputs.package
+        shell: bash
+        run: |
+          PKG=AbleAEC-${{ matrix.name }}
+          rm -rf "$PKG" && cp -R dist "$PKG"
+          if [ "$RUNNER_OS" = macOS ]; then ditto -c -k --keepParent "$PKG" "$PKG.zip"
+          elif [ "$RUNNER_OS" = Windows ]; then 7z a -tzip "$PKG.zip" "$PKG" > /dev/null
+          else zip -qry "$PKG.zip" "$PKG"; fi
+
+      - uses: actions/upload-artifact@v4
+        if: inputs.package
+        with:
+          name: release-${{ matrix.name }}
+          path: AbleAEC-${{ matrix.name }}.zip
+          compression-level: 0
