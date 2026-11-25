@@ -13,6 +13,9 @@ public:
 
     void paint (juce::Graphics&) override;
     void resized() override;
+    bool keyPressed (const juce::KeyPress&) override; // app only: keyboard shortcuts
+
+    juce::FontOptions font (float height, bool bold = false) const;
 
 private:
     void timerCallback() override;
@@ -24,12 +27,12 @@ private:
         std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment;
     };
 
-    // In-plugin user guide, shown over the controls.
-    class GuidePanel final : public juce::Component
+    // Scrollable text panel over the controls (user guide, keyboard shortcuts).
+    class InfoPanel final : public juce::Component
     {
     public:
-        explicit GuidePanel (AbleAecEditor& owner);
-        void setContent (ui::Lang lang);
+        explicit InfoPanel (AbleAecEditor& owner);
+        void setContent (const juce::String& title, const juce::String& text, const juce::String& closeText);
         void paint (juce::Graphics&) override;
         void resized() override;
 
@@ -40,27 +43,53 @@ private:
         juce::String title;
     };
 
+    // MIDI mapping: which CC drives what, with MIDI learn.
+    class MidiPanel final : public juce::Component
+    {
+    public:
+        explicit MidiPanel (AbleAecEditor& owner);
+        void refresh();
+        void paint (juce::Graphics&) override;
+        void resized() override;
+
+    private:
+        struct Row
+        {
+            juce::Label name, cc;
+            juce::TextButton learn;
+        };
+        AbleAecEditor& owner;
+        juce::OwnedArray<Row> rows;
+        juce::TextButton closeButton, defaultsButton;
+        juce::Label note;
+    };
+
     void setupKnob (Knob&, const juce::String& paramId);
     juce::String knobParamId (const Knob&) const;
     void applyLanguage();
+    void refreshPresetList();
+    void savePresetDialog();
+    void showPanel (juce::Component& panel);
     juce::String t (ui::Str s) const { return ui::tr (s, lang); }
-    juce::FontOptions font (float height, bool bold = false) const;
 
     AbleAecProcessor& proc;
+    const bool isApp;
     ui::Lang lang = ui::Lang::en;
     juce::Typeface::Ptr typeRegular, typeBold;
 
     Knob filterLen, step, refDelay, resAmount, resFloor;
 
     juce::ToggleButton freezeButton, offButton, autoButton;
-    juce::ComboBox modeBox, latencyBox, refModeBox, langBox;
-    juce::TextButton resetButton, guideButton;
+    juce::ComboBox modeBox, latencyBox, refModeBox, langBox, presetBox;
+    juce::TextButton resetButton, guideButton, savePresetButton, deletePresetButton, midiButton, keysButton;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> freezeAtt, offAtt, autoAtt;
     bool autoShown = false;
     void setAutoKnobs (bool on);
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> modeAtt, latencyAtt, refModeAtt;
+    int shownPreset = -2, shownPresetCount = -1;
 
-    GuidePanel guidePanel { *this };
+    InfoPanel guidePanel { *this }, keysPanel { *this };
+    MidiPanel midiPanel { *this };
     juce::TooltipWindow tooltipWindow { this, 600 };
 
     // cached meter values for painting

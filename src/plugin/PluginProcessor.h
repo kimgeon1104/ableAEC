@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AecCore.h"
+#include "Controls.h"
 #include "UiStrings.h"
 
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -9,7 +10,7 @@
 #include <atomic>
 #include <vector>
 
-class AbleAecProcessor final : public juce::AudioProcessor
+class AbleAecProcessor final : public juce::AudioProcessor, private juce::AsyncUpdater
 {
 public:
     static constexpr int kMaxChannels = 2;
@@ -30,15 +31,16 @@ public:
     bool hasEditor() const override { return true; }
 
     const juce::String getName() const override { return JucePlugin_Name; }
-    bool acceptsMidi() const override { return false; }
+    bool acceptsMidi() const override { return true; } // MIDI control (CC, Program Change)
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
     double getTailLengthSeconds() const override { return 0.0; }
 
-    int getNumPrograms() override { return 1; }
-    int getCurrentProgram() override { return 0; }
-    void setCurrentProgram (int) override {}
-    const juce::String getProgramName (int) override { return {}; }
+    // host programs = all presets (built-in first, then the user's)
+    int getNumPrograms() override { return juce::jmax (1, getNumPresets()); }
+    int getCurrentProgram() override { return juce::jmax (0, currentPreset.load()); }
+    void setCurrentProgram (int index) override;
+    const juce::String getProgramName (int index) override { return getPresetName (index, getUiLanguage()); }
     void changeProgramName (int, const juce::String&) override {}
 
     void getStateInformation (juce::MemoryBlock& destData) override;
@@ -52,6 +54,36 @@ public:
     // Interface language, saved with the project (not automatable). Defaults to the system language.
     ui::Lang getUiLanguage() const;
     void setUiLanguage (ui::Lang l);
+
+    // ---- presets (message thread). Index: built-in presets first, then the user's (sorted by name).
+    int getNumPresets() const { return (int) ctl::factoryPresets().size() + userPresets.size(); }
+    juce::String getPresetName (int index, ui::Lang lang) const;
+    bool isFactoryPreset (int index) const { return index >= 0 && index < (int) ctl::factoryPresets().size(); }
+    void applyPreset (int index);
+    bool saveUserPreset (const juce::String& name); // same name overwrites
+    bool deleteUserPreset (int index);
+    int getCurrentPresetIndex() const { return currentPreset.load(); }
+    static juce::File getUserPresetFolder();
+    void reloadUserPresets();
+
+    // ---- MIDI control (CC numbers per target, -1 = none; learn assigns the next CC that arrives)
+    int getMidiCc (ctl::Target t) const { return midiCc[(size_t) t].load(); }
+    void setMidiCc (ctl::Target t, int cc) { midiCc[(size_t) t].store (cc); }
+    void resetMidiMap();
+    void startMidiLearn (ctl::Target t) { midiLearn.store ((int) t); }
+    int getMidiLearnTarget() const { return midiLearn.load(); }
+
+    // ---- app only: which input channels carry the mic and the speaker reference
+    enum class InputRouting { mic12Ref34 = 0, mic1Ref2 = 1 };
+    InputRouting getInputRouting() const { return (InputRouting) inputRouting.load(); }
+    void setInputRouting (InputRouting r);
+
+    // ---- actions shared by MIDI and keyboard shortcuts (message thread or audio thread)
+    void setParamReal (const char* id, float value); // in the parameter's own units
+    void nudgeParam (const char* id, float delta);
+    void toggleParam (const char* id);
+    void cycleChoice (const char* id);
+    void stepPreset (int delta);
 
     // audio -> UI meters
     struct Meters
@@ -67,6 +99,9 @@ public:
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
+    void handleAsyncUpdate() override;
+    void handleMidi (const juce::MidiBuffer& midi) noexcept;
+    void applyInputRouting (juce::AudioBuffer<float>& buffer) noexcept;
     ableaec::AecSettings readSettings() const noexcept;
     void switchLatencyMode (int mode) noexcept;
     void runBlock (int numMic) noexcept;
@@ -104,6 +139,16 @@ private:
     std::atomic<float>* pAuto = nullptr;
     std::atomic<float>* pLatency = nullptr;
     std::atomic<float>* pRefMode = nullptr;
+
+    struct UserPreset { juce::String name; juce::File file; };
+    juce::Array<UserPreset> userPresets;
+    std::atomic<int> currentPreset { 0 };
+    std::atomic<int> pendingPreset { -1 }, pendingPresetStep { 0 }; // from the audio thread
+
+    std::array<std::atomic<int>, (size_t) ctl::numTargets> midiCc {};
+    std::array<int, (size_t) ctl::numTargets> lastCcValue {};
+    std::atomic<int> midiLearn { -1 };
+    std::atomic<int> inputRouting { 0 };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AbleAecProcessor)
 };

@@ -13,7 +13,8 @@ const juce::Colour kText { 0xffe6e6e6 };
 } // namespace
 
 //==============================================================================
-AbleAecEditor::AbleAecEditor (AbleAecProcessor& p) : AudioProcessorEditor (&p), proc (p)
+AbleAecEditor::AbleAecEditor (AbleAecProcessor& p)
+    : AudioProcessorEditor (&p), proc (p), isApp (p.wrapperType == juce::AudioProcessor::wrapperType_Standalone)
 {
     // Embedded UI font (Latin + the Korean characters the interface uses), so Korean renders the
     // same on every system. It becomes this plugin's default sans-serif face.
@@ -68,18 +69,39 @@ AbleAecEditor::AbleAecEditor (AbleAecProcessor& p) : AudioProcessorEditor (&p), 
     resetButton.onClick = [this] { proc.requestReset(); };
     addAndMakeVisible (resetButton);
 
-    guideButton.onClick = [this]
-    {
-        guidePanel.setVisible (true);
-        guidePanel.toFront (true);
-    };
+    guideButton.onClick = [this] { showPanel (guidePanel); };
     addAndMakeVisible (guideButton);
 
+    // presets
+    presetBox.onChange = [this]
+    {
+        const int index = presetBox.getSelectedId() - 1;
+        if (index >= 0 && index != proc.getCurrentPresetIndex())
+            proc.applyPreset (index);
+        deletePresetButton.setEnabled (! proc.isFactoryPreset (index));
+    };
+    savePresetButton.onClick = [this] { savePresetDialog(); };
+    deletePresetButton.onClick = [this]
+    {
+        proc.deleteUserPreset (presetBox.getSelectedId() - 1);
+        refreshPresetList();
+    };
+    midiButton.onClick = [this] { midiPanel.refresh(); showPanel (midiPanel); };
+    keysButton.onClick = [this] { showPanel (keysPanel); };
+    for (auto* c : std::initializer_list<juce::Component*> { &presetBox, &savePresetButton, &deletePresetButton, &midiButton })
+        addAndMakeVisible (c);
+    if (isApp)
+        addAndMakeVisible (keysButton);
+
     addChildComponent (guidePanel);
+    addChildComponent (keysPanel);
+    addChildComponent (midiPanel);
 
     applyLanguage();
     setAutoKnobs (autoButton.getToggleState());
-    setSize (640, 430);
+    refreshPresetList();
+    setWantsKeyboardFocus (isApp);
+    setSize (640, 470);
     startTimerHz (15);
 }
 
@@ -152,7 +174,20 @@ void AbleAecEditor::applyLanguage()
     latencyBox.setTooltip (t (Str::tipLatency));
     refModeBox.setTooltip (t (Str::tipRefMode));
 
-    guidePanel.setContent (lang);
+    guidePanel.setContent (t (Str::guideTitle), ui::guide (lang), t (Str::close));
+    keysPanel.setContent (t (Str::keysTitle), ui::shortcuts (lang), t (Str::close));
+    midiPanel.refresh();
+    savePresetButton.setButtonText (t (Str::presetSave));
+    deletePresetButton.setButtonText (t (Str::presetDelete));
+    midiButton.setButtonText (t (Str::midiButton));
+    keysButton.setButtonText (t (Str::keysButton));
+    presetBox.setTooltip (t (Str::tipPreset));
+    savePresetButton.setTooltip (t (Str::tipPresetSave));
+    deletePresetButton.setTooltip (t (Str::tipPresetDelete));
+    midiButton.setTooltip (t (Str::tipMidi));
+    keysButton.setTooltip (t (Str::tipKeys));
+    shownPresetCount = -1; // rebuild the list with the new language
+    refreshPresetList();
     repaint();
 }
 
@@ -195,6 +230,10 @@ void AbleAecEditor::timerCallback()
         resFloor.slider.setValue (m.effResFloorDb.load(), juce::dontSendNotification);
     }
     echoPresent = m.echoPresent.load();
+    if (proc.getCurrentPresetIndex() != shownPreset || proc.getNumPresets() != shownPresetCount)
+        refreshPresetList();
+    if (midiPanel.isVisible())
+        midiPanel.refresh();
     erle = m.erleDb.load();
     delayMs = m.echoDelayMs.load();
     refDb = m.refLevelDb.load();
@@ -292,7 +331,21 @@ void AbleAecEditor::resized()
     guideButton.setBounds (headerRight.removeFromRight (90));
     headerRight.removeFromRight (10);
     langBox.setBounds (headerRight);
-    r.removeFromTop (6);
+    r.removeFromTop (4);
+
+    auto presetRow = r.removeFromTop (28);
+    presetBox.setBounds (presetRow.removeFromLeft (250));
+    presetRow.removeFromLeft (8);
+    savePresetButton.setBounds (presetRow.removeFromLeft (70));
+    presetRow.removeFromLeft (6);
+    deletePresetButton.setBounds (presetRow.removeFromLeft (70));
+    midiButton.setBounds (presetRow.removeFromRight (70));
+    if (isApp)
+    {
+        presetRow.removeFromRight (6);
+        keysButton.setBounds (presetRow.removeFromRight (90));
+    }
+    r.removeFromTop (8);
 
     auto knobs = r.removeFromTop (130);
     const int w = knobs.getWidth() / 5;
@@ -322,11 +375,103 @@ void AbleAecEditor::resized()
     r.removeFromLeft (10);
     statusArea = r;
 
-    guidePanel.setBounds (getLocalBounds().reduced (10));
+    for (auto* p : std::initializer_list<juce::Component*> { &guidePanel, &keysPanel, &midiPanel })
+        p->setBounds (getLocalBounds().reduced (10));
+}
+
+void AbleAecEditor::showPanel (juce::Component& panel)
+{
+    for (auto* p : std::initializer_list<juce::Component*> { &guidePanel, &keysPanel, &midiPanel })
+        p->setVisible (p == &panel);
+    panel.toFront (true);
+}
+
+void AbleAecEditor::refreshPresetList()
+{
+    using ui::Str;
+    const int n = proc.getNumPresets();
+    const int current = proc.getCurrentPresetIndex();
+    if (n != shownPresetCount)
+    {
+        presetBox.clear (juce::dontSendNotification);
+        const int nf = (int) ctl::factoryPresets().size();
+        presetBox.addSectionHeading (t (Str::presetFactory));
+        for (int i = 0; i < nf; ++i)
+            presetBox.addItem ((isApp && i < 9 ? juce::String (i + 1) + ".  " : juce::String()) + proc.getPresetName (i, lang), i + 1);
+        if (n > nf)
+        {
+            presetBox.addSeparator();
+            presetBox.addSectionHeading (t (Str::presetUser));
+            for (int i = nf; i < n; ++i)
+                presetBox.addItem ((isApp && i < 9 ? juce::String (i + 1) + ".  " : juce::String()) + proc.getPresetName (i, lang), i + 1);
+        }
+        shownPresetCount = n;
+    }
+    presetBox.setSelectedId (current + 1, juce::dontSendNotification);
+    deletePresetButton.setEnabled (! proc.isFactoryPreset (current));
+    shownPreset = current;
+}
+
+void AbleAecEditor::savePresetDialog()
+{
+    using ui::Str;
+    auto* w = new juce::AlertWindow (t (Str::presetSaveTitle), {}, juce::MessageBoxIconType::NoIcon, this);
+    const int current = proc.getCurrentPresetIndex();
+    w->addTextEditor ("name", proc.isFactoryPreset (current) ? juce::String() : proc.getPresetName (current, lang), t (Str::presetName));
+    w->addButton (t (Str::presetSave), 1, juce::KeyPress (juce::KeyPress::returnKey));
+    w->addButton (t (Str::cancel), 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    juce::Component::SafePointer<AbleAecEditor> safe (this);
+    w->enterModalState (true, juce::ModalCallbackFunction::create ([safe, w] (int result)
+    {
+        if (result == 1 && safe != nullptr)
+        {
+            safe->proc.saveUserPreset (w->getTextEditorContents ("name"));
+            safe->shownPresetCount = -1;
+            safe->refreshPresetList();
+        }
+    }), true);
+}
+
+bool AbleAecEditor::keyPressed (const juce::KeyPress& key)
+{
+    if (! isApp)
+        return false;
+
+    const auto c = key.getTextCharacter();
+    const auto code = key.getKeyCode();
+    if (code == juce::KeyPress::escapeKey)
+    {
+        for (auto* p : std::initializer_list<juce::Component*> { &guidePanel, &keysPanel, &midiPanel })
+            p->setVisible (false);
+        return true;
+    }
+    if (code == juce::KeyPress::F1Key || c == 'g' || c == 'G') { showPanel (guidePanel); return true; }
+    if (c == 'k' || c == 'K' || c == '?') { showPanel (keysPanel); return true; }
+    if (key.getModifiers().isCommandDown() && (code == 'S' || code == 's')) { savePresetDialog(); return true; }
+    if (key.getModifiers().isCommandDown() || key.getModifiers().isAltDown())
+        return false;
+    if (c >= '1' && c <= '9') { proc.applyPreset (c - '1'); return true; }
+
+    switch (juce::CharacterFunctions::toLowerCase (c))
+    {
+        case 'a': proc.toggleParam ("auto"); return true;
+        case 'f': proc.toggleParam ("freeze"); return true;
+        case 'b': proc.toggleParam ("aecOff"); return true;
+        case 'r': proc.requestReset(); return true;
+        case 'm': proc.cycleChoice ("mode"); return true;
+        case 'l': proc.cycleChoice ("latency"); return true;
+        case ',': proc.nudgeParam ("filterLen", -25.0f); return true;
+        case '.': proc.nudgeParam ("filterLen", 25.0f); return true;
+        case '[': proc.nudgeParam ("resAmount", -0.05f); return true;
+        case ']': proc.nudgeParam ("resAmount", 0.05f); return true;
+        case '-': proc.nudgeParam ("step", -0.05f); return true;
+        case '=': proc.nudgeParam ("step", 0.05f); return true;
+        default: return false;
+    }
 }
 
 //==============================================================================
-AbleAecEditor::GuidePanel::GuidePanel (AbleAecEditor& o) : owner (o)
+AbleAecEditor::InfoPanel::InfoPanel (AbleAecEditor& o) : owner (o)
 {
     text.setMultiLine (true, true);
     text.setReadOnly (true);
@@ -340,15 +485,19 @@ AbleAecEditor::GuidePanel::GuidePanel (AbleAecEditor& o) : owner (o)
 
     closeButton.onClick = [this] { setVisible (false); };
     addAndMakeVisible (closeButton);
+
+    // Lay the text out at a real width from the start: filling a 0-px-wide TextEditor wraps every
+    // character onto its own line and takes seconds.
+    setSize (620, 450);
 }
 
-void AbleAecEditor::GuidePanel::setContent (ui::Lang lang)
+void AbleAecEditor::InfoPanel::setContent (const juce::String& newTitle, const juce::String& body, const juce::String& closeText)
 {
-    title = ui::tr (ui::Str::guideTitle, lang);
-    closeButton.setButtonText (ui::tr (ui::Str::close, lang));
+    title = newTitle;
+    closeButton.setButtonText (closeText);
 
     text.clear();
-    const auto lines = juce::StringArray::fromLines (ui::guide (lang));
+    const auto lines = juce::StringArray::fromLines (body);
     for (int i = 0; i < lines.size(); ++i)
     {
         auto lineText = lines[i];
@@ -371,7 +520,7 @@ void AbleAecEditor::GuidePanel::setContent (ui::Lang lang)
     repaint();
 }
 
-void AbleAecEditor::GuidePanel::paint (juce::Graphics& g)
+void AbleAecEditor::InfoPanel::paint (juce::Graphics& g)
 {
     g.setColour (kBg);
     g.fillRoundedRectangle (getLocalBounds().toFloat(), 8.0f);
@@ -382,11 +531,98 @@ void AbleAecEditor::GuidePanel::paint (juce::Graphics& g)
     g.drawText (title, getLocalBounds().reduced (16, 0).removeFromTop (44), juce::Justification::centredLeft);
 }
 
-void AbleAecEditor::GuidePanel::resized()
+void AbleAecEditor::InfoPanel::resized()
 {
     auto r = getLocalBounds().reduced (12);
     auto top = r.removeFromTop (32);
     closeButton.setBounds (top.removeFromRight (90).withSizeKeepingCentre (90, 28));
     r.removeFromTop (8);
     text.setBounds (r);
+}
+
+//==============================================================================
+AbleAecEditor::MidiPanel::MidiPanel (AbleAecEditor& o) : owner (o)
+{
+    for (int t = 0; t < ctl::numTargets; ++t)
+    {
+        auto* row = rows.add (new Row());
+        row->name.setColour (juce::Label::textColourId, kText);
+        row->cc.setColour (juce::Label::textColourId, kAccent);
+        row->cc.setJustificationType (juce::Justification::centred);
+        row->learn.onClick = [this, t]
+        {
+            owner.proc.startMidiLearn ((ctl::Target) t);
+            refresh();
+        };
+        addAndMakeVisible (row->name);
+        addAndMakeVisible (row->cc);
+        addAndMakeVisible (row->learn);
+    }
+    note.setColour (juce::Label::textColourId, kText.withAlpha (0.7f));
+    note.setJustificationType (juce::Justification::topLeft);
+    addAndMakeVisible (note);
+    closeButton.onClick = [this] { setVisible (false); };
+    defaultsButton.onClick = [this] { owner.proc.resetMidiMap(); refresh(); };
+    addAndMakeVisible (closeButton);
+    addAndMakeVisible (defaultsButton);
+}
+
+void AbleAecEditor::MidiPanel::refresh()
+{
+    using ui::Str;
+    const int learning = owner.proc.getMidiLearnTarget();
+    for (int t = 0; t < ctl::numTargets; ++t)
+    {
+        auto* row = rows[t];
+        row->name.setText (owner.t (ctl::info ((ctl::Target) t).name), juce::dontSendNotification);
+        row->name.setFont (owner.font (13.0f));
+        const int cc = owner.proc.getMidiCc ((ctl::Target) t);
+        row->cc.setText (learning == t ? owner.t (Str::midiLearning)
+                                       : (cc >= 0 ? "CC " + juce::String (cc) : owner.t (Str::midiNone)),
+                         juce::dontSendNotification);
+        row->cc.setFont (owner.font (13.0f, learning == t));
+        row->learn.setButtonText (owner.t (Str::midiLearn));
+    }
+    note.setText (owner.t (Str::midiNote), juce::dontSendNotification);
+    note.setFont (owner.font (12.5f));
+    closeButton.setButtonText (owner.t (Str::close));
+    defaultsButton.setButtonText (owner.t (Str::midiDefaults));
+    repaint();
+}
+
+void AbleAecEditor::MidiPanel::paint (juce::Graphics& g)
+{
+    g.setColour (kBg);
+    g.fillRoundedRectangle (getLocalBounds().toFloat(), 8.0f);
+    g.setColour (kAccent.withAlpha (0.6f));
+    g.drawRoundedRectangle (getLocalBounds().toFloat().reduced (0.5f), 8.0f, 1.0f);
+    g.setColour (kText);
+    g.setFont (owner.font (18.0f, true));
+    g.drawText (owner.t (ui::Str::midiTitle), getLocalBounds().reduced (16, 0).removeFromTop (44), juce::Justification::centredLeft);
+}
+
+void AbleAecEditor::MidiPanel::resized()
+{
+    auto r = getLocalBounds().reduced (12);
+    auto top = r.removeFromTop (32);
+    closeButton.setBounds (top.removeFromRight (90).withSizeKeepingCentre (90, 28));
+    top.removeFromRight (8);
+    defaultsButton.setBounds (top.removeFromRight (110).withSizeKeepingCentre (110, 28));
+    r.removeFromTop (6);
+    note.setBounds (r.removeFromBottom (48));
+
+    // two columns of rows
+    const int half = (ctl::numTargets + 1) / 2;
+    auto left = r.removeFromLeft (r.getWidth() / 2 - 6);
+    r.removeFromLeft (12);
+    auto right = r;
+    for (int t = 0; t < ctl::numTargets; ++t)
+    {
+        auto& col = t < half ? left : right;
+        auto row = col.removeFromTop (col.getHeight() / juce::jmax (1, (t < half ? half : ctl::numTargets - half) - (t < half ? t : t - half)));
+        row = row.withSizeKeepingCentre (row.getWidth(), 26);
+        rows[t]->learn.setBounds (row.removeFromRight (64));
+        rows[t]->cc.setBounds (row.removeFromRight (96));
+        rows[t]->name.setBounds (row);
+    }
 }

@@ -57,6 +57,8 @@ jobs:
           mkdir -p dist
           cp -R build/AbleAEC_artefacts/Release/VST3/AbleAEC.vst3 dist/
           if [ -d build/AbleAEC_artefacts/Release/AU ]; then cp -R build/AbleAEC_artefacts/Release/AU/AbleAEC.component dist/; fi
+          mkdir -p dist/App
+          cp -R build/AbleAEC_artefacts/Release/Standalone/. dist/App/
 
       - uses: actions/upload-artifact@v4
         with:

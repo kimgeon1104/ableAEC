@@ -35,7 +35,9 @@ cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-결과물: `build\AbleAEC_artefacts\Release\VST3\AbleAEC.vst3` → `C:\Program Files\Common Files\VST3\` 에 복사
+결과물:
+- 플러그인: `build\AbleAEC_artefacts\Release\VST3\AbleAEC.vst3` → `C:\Program Files\Common Files\VST3\` 에 복사
+- 앱: `build\AbleAEC_artefacts\Release\Standalone\AbleAEC.exe` (아무 위치에서 실행)
 
 ## macOS
 
@@ -53,6 +55,7 @@ ctest --test-dir build -C Release --output-on-failure
 | --- | --- | --- |
 | VST3 | `build/AbleAEC_artefacts/Release/VST3/AbleAEC.vst3` | `~/Library/Audio/Plug-Ins/VST3/` |
 | AU | `build/AbleAEC_artefacts/Release/AU/AbleAEC.component` | `~/Library/Audio/Plug-Ins/Components/` |
+| 앱 | `build/AbleAEC_artefacts/Release/Standalone/AbleAEC.app` | `/Applications` 등 아무 곳 |
 
 GitHub Actions 결과물처럼 인터넷에서 받은 서명되지 않은 플러그인은 격리 속성을 지워야 Live가 로드합니다.
 
@@ -91,7 +94,7 @@ python3 tools/make_ui_font.py --check  # 빠진 글자 검사
 | 테스트 | 내용 |
 | --- | --- |
 | `aec_sim_test` | 합성 음성 + 가상 방 응답으로 AEC 코어 검증: 단일 발화 ERLE, 더블토크 시 근단 음성 보존, 에코 경로 변화 후 재수렴, 지연 추정, 참조 없을 때 투명성 |
-| `plugin_host_test` | 빌드된 VST3를 DAW처럼 로드 → 사이드체인 버스 활성화, 두 Latency 모드의 보고 지연과 실제 출력 정렬 일치, L≠R 스테레오 사이드체인에서 플러그인 경유 에코 제거 (스테레오 vs 모노 참조 비교), 사이드체인 없을 때 통과 동작 |
+| `plugin_host_test` | 빌드된 VST3를 DAW처럼 로드 → 사이드체인 버스 활성화, 두 Latency 모드의 보고 지연과 실제 출력 정렬 일치, L≠R 스테레오 사이드체인에서 플러그인 경유 에코 제거 (스테레오 vs 모노 참조 비교), 사이드체인 없을 때 통과 동작, 프리셋(호스트 프로그램) 값 적용, MIDI CC 제어 |
 | `tests/realistic/run_realistic.py` | 내 목소리(TTS) + 스피커 소리 6종(음악 3장르·백색잡음·말소리 2종) × 조건(스피커 1/2대, 왜곡, 큰 번짐, 약한 에코, 에코 없음, 에코 켜짐/꺼짐) 17개 시나리오를 가상 방에서 측정. CI(Linux)에서 `--check` 로 20개 회귀 기준치 검사. 자세한 내용: [[realistic-test]] |
 
 Linux에서 측정한 결과 예시:

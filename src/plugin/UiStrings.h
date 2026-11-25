@@ -30,6 +30,14 @@ enum class Str
     tipMode, tipLatency, tipRefMode, tipFreeze, tipAecOff, tipReset, tipGuide, tipLanguage,
     guideTitle,
     autoMode, autoSuffix, tipAuto, stAuto, autoOff, autoOnEcho, autoOnNoEcho, autoLearning,
+    ctlOutput, ctlLatency, ctlRef, ctlPresetNext, ctlPresetPrev,
+    pDefault, pSinging, pTalk, pStream, pEchoRoom, pLowLatency, pMaxRemoval,
+    presetLabel, presetSave, presetDelete, presetFactory, presetUser, presetName, presetSaveTitle, cancel,
+    tipPreset, tipPresetSave, tipPresetDelete,
+    midiButton, midiTitle, midiLearn, midiLearning, midiDefaults, midiNone, midiNote, tipMidi,
+    keysButton, keysTitle, tipKeys,
+    appAudioSettings, appInputs, appRoute4, appRoute2, appAutostart, appTrayNote, trayOpen, trayQuit,
+    tipAppInputs, tipAutostart,
     count
 };
 
@@ -119,6 +127,58 @@ inline const Entry& entry (Str s)
         { "on, echo detected", "켜짐, 에코 감지" },
         { "on, no echo: suppression off", "켜짐, 에코 없음: 억제 끔" },
         { "on, learning...", "켜짐, 학습 중..." },
+        { "Output", "출력" },
+        { "Latency mode", "지연 모드" },
+        { "Reference", "참조" },
+        { "Next preset", "다음 프리셋" },
+        { "Previous preset", "이전 프리셋" },
+        { "Default", "기본값" },
+        { "Singing", "노래" },
+        { "Talk / call", "대화·통화" },
+        { "Streaming", "방송·스트리밍" },
+        { "Echoey room", "울리는 방" },
+        { "Low-latency monitoring", "저지연 모니터링" },
+        { "Maximum removal", "최대 제거" },
+        { "Preset", "프리셋" },
+        { "Save", "저장" },
+        { "Delete", "삭제" },
+        { "Built-in", "기본 프리셋" },
+        { "My presets", "내 프리셋" },
+        { "Preset name", "프리셋 이름" },
+        { "Save preset", "프리셋 저장" },
+        { "Cancel", "취소" },
+        { "Load a preset. Built-in: Default, Singing, Talk/call, Streaming, Echoey room, Low-latency monitoring, Maximum removal.",
+          "프리셋을 불러옵니다. 기본 프리셋: 기본값, 노래, 대화·통화, 방송·스트리밍, 울리는 방, 저지연 모니터링, 최대 제거." },
+        { "Save the current settings as your own preset (same name overwrites).",
+          "지금 설정을 내 프리셋으로 저장합니다(같은 이름이면 덮어씀)." },
+        { "Delete the selected preset of your own (built-in presets cannot be deleted).",
+          "선택한 내 프리셋을 지웁니다(기본 프리셋은 지울 수 없음)." },
+        { "MIDI", "MIDI" },
+        { "MIDI control", "MIDI 제어" },
+        { "Learn", "학습" },
+        { "move a control...", "조작기를 움직이세요..." },
+        { "Defaults", "기본값으로" },
+        { "-", "-" },
+        { "Control change (CC) on any channel moves the control. Program Change n loads preset n+1. "
+          "In Ableton, set a MIDI track's MIDI To to this plugin; Ableton's own MIDI Map also works on every knob.",
+          "아무 채널의 컨트롤 체인지(CC)로 조절합니다. 프로그램 체인지 n은 n+1번째 프리셋을 불러옵니다. "
+          "에이블톤에서는 MIDI 트랙의 MIDI To를 이 플러그인으로 지정하세요. 에이블톤의 MIDI 맵도 모든 노브에 쓸 수 있습니다." },
+        { "MIDI control: which controller moves what, and MIDI learn.", "MIDI 제어: 어떤 컨트롤러가 무엇을 움직이는지, MIDI 학습." },
+        { "Shortcuts", "단축키" },
+        { "Keyboard shortcuts", "키보드 단축키" },
+        { "Keyboard shortcuts of the app.", "앱의 키보드 단축키를 봅니다." },
+        { "Audio settings", "오디오 설정" },
+        { "Inputs", "입력 배치" },
+        { "1-2 mic, 3-4 speaker", "1-2 마이크, 3-4 스피커" },
+        { "1 mic, 2 speaker", "1 마이크, 2 스피커" },
+        { "Start at login", "로그인 시 자동 실행" },
+        { "Closing the window keeps AbleAEC running in the system tray.", "창을 닫아도 시스템 트레이에서 계속 실행됩니다." },
+        { "Open AbleAEC", "AbleAEC 열기" },
+        { "Quit", "종료" },
+        { "Which input channels carry the mic and the speaker signal (the reference). Use a loopback input or a virtual cable "
+          "for the speaker signal.",
+          "마이크와 스피커 신호(참조)가 들어오는 입력 채널입니다. 스피커 신호는 오디오 인터페이스의 루프백 입력이나 가상 오디오 케이블로 넣으세요." },
+        { "Start AbleAEC hidden in the tray when you log in.", "로그인하면 AbleAEC를 트레이에 숨긴 채로 시작합니다." },
     };
     static_assert (sizeof (table) / sizeof (table[0]) == (size_t) Str::count, "missing UI string");
     return table[(size_t) s];
@@ -177,6 +237,27 @@ inline juce::String guide (Lang l)
             "# GPU를 쓰나요?\n"
             "아니요. 여기서 '학습'은 딥러닝 학습이 아니라, 매 순간 방의 반향을 따라가는 작은 계산(적응 필터)입니다. "
             "5-10 ms마다 바로 결과를 내야 해서 GPU로 데이터를 보내고 받는 시간이 계산보다 오히려 깁니다. CPU 한 코어의 약 8 %면 충분합니다.\n"
+            "\n"
+            "# 프리셋\n"
+            "- 위쪽 프리셋 목록에서 고릅니다. 기본 프리셋: 기본값, 노래(목소리 보호, 자동 켜짐), 대화·통화(억제 강하게), "
+            "방송·스트리밍, 울리는 방(긴 필터), 저지연 모니터링, 최대 제거.\n"
+            "- 저장: 지금 설정을 내 프리셋으로 저장합니다. 삭제: 선택한 내 프리셋을 지웁니다.\n"
+            "- 언어와 MIDI 설정은 프리셋에 포함되지 않습니다. 에이블톤에서는 기본 프리셋이 프로그램 목록에도 나옵니다.\n"
+            "\n"
+            "# MIDI 제어\n"
+            "- MIDI 버튼을 누르면 어떤 CC가 무엇을 움직이는지 보이고, 학습 버튼으로 바꿀 수 있습니다.\n"
+            "- 기본 배정: CC20 필터 길이, CC21 학습 속도, CC22 참조 지연, CC23 잔여 억제, CC24 억제 한계, CC25 자동, CC26 학습 멈춤, "
+            "CC27 AEC 끄기, CC28 필터 초기화, CC29 출력, CC30 지연 모드, CC31 참조, CC32 다음 프리셋, CC33 이전 프리셋.\n"
+            "- 프로그램 체인지 n은 n+1번째 프리셋을 불러옵니다.\n"
+            "- 에이블톤에서는 MIDI 트랙의 MIDI To를 이 플러그인으로 지정하세요. 앱에서는 오디오 설정에서 MIDI 입력 장치를 켭니다.\n"
+            "\n"
+            "# 앱으로 쓰기 (에이블톤 없이)\n"
+            "- AbleAEC 앱을 실행하고 오디오 설정에서 입력/출력 장치를 고릅니다.\n"
+            "- 입력 배치: '1-2 마이크, 3-4 스피커' 또는 '1 마이크, 2 스피커'. 스피커 신호는 인터페이스의 루프백 입력이나 가상 오디오 케이블로 넣습니다.\n"
+            "- 출력은 처리된 마이크입니다. 다른 프로그램(방송·통화)에서 쓰려면 출력을 가상 오디오 케이블로 보내세요.\n"
+            "- 창을 닫아도 시스템 트레이에서 계속 실행됩니다. 트레이 아이콘에서 열기/종료.\n"
+            "- '로그인 시 자동 실행'을 켜면 컴퓨터를 켤 때 트레이에 숨긴 채로 시작합니다.\n"
+            "- 단축키 버튼으로 키보드 단축키를 볼 수 있습니다.\n"
             "\n"
             "# 화면 읽기\n"
             "- 스피커 / 마이크 입력 / 출력: 각 신호의 크기.\n"
@@ -238,6 +319,27 @@ inline juce::String guide (Lang l)
         "No. 'Learning' here is not deep-learning training but a small calculation (an adaptive filter) that follows the room's echo moment by moment. "
         "It must answer every 5-10 ms, and moving audio to a GPU and back would take longer than the calculation itself. About 8 % of one CPU core is enough.\n"
         "\n"
+        "# Presets\n"
+        "- Pick one from the preset list at the top. Built-in: Default, Singing (protects the voice, Auto on), Talk/call "
+        "(stronger suppression), Streaming, Echoey room (long filter), Low-latency monitoring, Maximum removal.\n"
+        "- Save stores the current settings as your own preset; Delete removes the selected one of your own.\n"
+        "- Language and MIDI settings are not part of a preset. In Ableton the built-in presets also appear as programs.\n"
+        "\n"
+        "# MIDI control\n"
+        "- The MIDI button shows which CC moves what; Learn changes it.\n"
+        "- Default: CC20 Filter Length, CC21 Adapt Speed, CC22 Ref Delay, CC23 Residual Supp., CC24 Supp. Floor, CC25 Auto, "
+        "CC26 Freeze, CC27 AEC Off, CC28 Reset Filter, CC29 Output, CC30 Latency mode, CC31 Reference, CC32 next preset, CC33 previous preset.\n"
+        "- Program Change n loads preset n+1.\n"
+        "- In Ableton, set a MIDI track's MIDI To to this plugin. In the app, enable the MIDI input in Audio settings.\n"
+        "\n"
+        "# Using the app (without Ableton)\n"
+        "- Start the AbleAEC app and choose the input/output device in Audio settings.\n"
+        "- Inputs: '1-2 mic, 3-4 speaker' or '1 mic, 2 speaker'. Feed the speaker signal through a loopback input or a virtual audio cable.\n"
+        "- The output is the cleaned mic. To use it in another program (streaming, calls), send the output to a virtual audio cable.\n"
+        "- Closing the window keeps it running in the system tray; open or quit from the tray icon.\n"
+        "- 'Start at login' starts it hidden in the tray when you log in.\n"
+        "- The Shortcuts button lists the keyboard shortcuts.\n"
+        "\n"
         "# Reading the display\n"
         "- Speaker / Mic in / Output: signal levels.\n"
         "- Echo reduction: how much quieter the output is than the mic while only the speakers play. "
@@ -252,5 +354,50 @@ inline juce::String guide (Lang l)
         "- Voice sounds smeared: lower Residual Supp. or raise Supp. Floor to about -12 dB.\n"
         "- A little backing track remains: raise Residual Supp. Turn the speakers down if they distort.\n"
         "- Monitoring feels late: use your interface's direct monitoring, or the Low latency mode.\n");
+}
+// Keyboard shortcuts of the app (same "# " / "- " format as the guide).
+inline juce::String shortcuts (Lang l)
+{
+    if (l == Lang::ko)
+        return juce::String::fromUTF8 (
+            "# 프리셋\n"
+            "- 1-9: 프리셋 1-9번 불러오기\n"
+            "- Ctrl+S (macOS: Cmd+S): 지금 설정을 프리셋으로 저장\n"
+            "\n"
+            "# 켜기 / 끄기\n"
+            "- A: 자동\n"
+            "- F: 학습 멈춤\n"
+            "- B: AEC 끄기 (원본 비교)\n"
+            "- R: 필터 초기화\n"
+            "- M: 출력 바꾸기 (깨끗하게 → 선형 AEC만 → 추정 에코 듣기 → 원본 마이크)\n"
+            "- L: 지연 모드 바꾸기 (품질 우선 / 저지연)\n"
+            "\n"
+            "# 노브\n"
+            "- , / . : 필터 길이 -/+ 25 ms\n"
+            "- [ / ] : 잔여 억제 -/+ 5 %\n"
+            "- - / = : 학습 속도 -/+ 5 %\n"
+            "\n"
+            "# 창\n"
+            "- F1 또는 G: 설명서, K: 단축키, Esc: 열린 창 닫기\n");
+    return juce::String::fromUTF8 (
+        "# Presets\n"
+        "- 1-9: load preset 1-9\n"
+        "- Ctrl+S (macOS: Cmd+S): save the current settings as a preset\n"
+        "\n"
+        "# On / off\n"
+        "- A: Auto\n"
+        "- F: Freeze\n"
+        "- B: AEC Off (compare with the raw mic)\n"
+        "- R: Reset Filter\n"
+        "- M: next Output (Clean -> Linear AEC only -> Echo estimate -> Raw mic)\n"
+        "- L: switch Latency (Quality / Low)\n"
+        "\n"
+        "# Knobs\n"
+        "- , / . : Filter Length -/+ 25 ms\n"
+        "- [ / ] : Residual Supp. -/+ 5 %\n"
+        "- - / = : Adapt Speed -/+ 5 %\n"
+        "\n"
+        "# Windows\n"
+        "- F1 or G: guide, K: shortcuts, Esc: close the open panel\n");
 }
 } // namespace ui

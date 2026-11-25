@@ -42,7 +42,7 @@ if(ABLEAEC_BUILD_PLUGIN)
         FetchContent_MakeAvailable(JUCE)
     endif()
 
-    set(ABLEAEC_FORMATS VST3)
+    set(ABLEAEC_FORMATS VST3 Standalone)
     if(APPLE)
         list(APPEND ABLEAEC_FORMATS AU)
     endif()
@@ -55,7 +55,7 @@ if(ABLEAEC_BUILD_PLUGIN)
         FORMATS ${ABLEAEC_FORMATS}
         PRODUCT_NAME "AbleAEC"
         IS_SYNTH FALSE
-        NEEDS_MIDI_INPUT FALSE
+        NEEDS_MIDI_INPUT TRUE
         NEEDS_MIDI_OUTPUT FALSE
         IS_MIDI_EFFECT FALSE
         EDITOR_WANTS_KEYBOARD_FOCUS FALSE
@@ -65,7 +65,8 @@ if(ABLEAEC_BUILD_PLUGIN)
 
     target_sources(AbleAEC PRIVATE
         src/plugin/PluginProcessor.cpp
-        src/plugin/PluginEditor.cpp)
+        src/plugin/PluginEditor.cpp
+        src/app/AbleAecApp.cpp)
 
     # UI font: Nanum Gothic subset (SIL OFL 1.1, see resources/fonts/OFL.txt), rebuilt by tools/make_ui_font.py
     juce_add_binary_data(AbleAEC_Fonts SOURCES
@@ -81,7 +82,8 @@ if(ABLEAEC_BUILD_PLUGIN)
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
         JUCE_VST3_CAN_REPLACE_VST2=0
-        JUCE_DISPLAY_SPLASH_SCREEN=0)
+        JUCE_DISPLAY_SPLASH_SCREEN=0
+        JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1)  # src/app/AbleAecApp.cpp: tray, autostart
 
     target_link_libraries(AbleAEC
         PRIVATE
