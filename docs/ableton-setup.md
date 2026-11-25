@@ -76,6 +76,9 @@ flowchart TB
 
 ## 화면 읽는 법
 
+![[plugin-ui.png]]
+
+
 - **Speaker / Mic in / Output** 미터: 사이드체인 참조, 마이크 입력, 처리 결과 레벨
 - **Sidechain**: `not connected`(사이드체인 꺼짐) / `connected, no signal` / `receiving (stereo)` / `receiving (mono)`
 - **Echo reduction (ERLE)**: 스피커 소리만 날 때 마이크 대비 출력이 얼마나 줄었는지(선형 필터 기준). 15 dB 이상이면 양호, 25 dB 이상이면 매우 좋음. 말하는 중에는 낮게 표시되는 것이 정상

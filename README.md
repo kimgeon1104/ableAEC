@@ -18,6 +18,12 @@ flowchart LR
     AEC --> OUT["에코가 제거된 마이크 신호"]
 ```
 
+## 화면
+
+![[docs/plugin-ui.png]]
+
+플러그인 에디터를 Linux에서 오프스크린으로 렌더링한 모습입니다 (스피커 신호와 그 지연된 에코를 넣어 수렴시킨 상태). Windows/macOS에서는 글꼴이 다를 수 있습니다.
+
 ## 특징
 
 - VST3 (Windows / macOS), AU (macOS) — 사이드체인 입력 버스 지원
