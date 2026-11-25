@@ -69,6 +69,19 @@ xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/AbleAEC.compo
 
 이후 설정은 [[ableton-setup|Ableton 설정 가이드]] 참고.
 
+## UI 글꼴
+
+한국어 화면용 글꼴 `resources/fonts/AbleAECUiKR-{Regular,Bold}.ttf` 는 나눔고딕(SIL OFL 1.1, `resources/fonts/OFL.txt`)에서 **UI에 쓰는 글자만 남긴 서브셋**입니다 (각 약 75 KB). OFL 규정상 수정본은 원래 이름(Nanum)을 쓸 수 없어 `AbleAEC UI KR` 로 이름을 바꿨습니다.
+
+`src/plugin/UiStrings.h` 의 한국어 문구를 바꾸면 글꼴을 다시 만들어야 합니다. CI는 `--check` 로 빠진 글자가 있으면 실패합니다.
+
+```bash
+sudo apt-get install -y fonts-nanum
+python3 -m pip install fonttools
+python3 tools/make_ui_font.py          # 다시 만들기
+python3 tools/make_ui_font.py --check  # 빠진 글자 검사
+```
+
 ## CI 빌드
 
 `.github/workflows/build.yml` 이 push / PR 마다 Linux · Windows · macOS 에서 빌드하고 테스트를 돌립니다. 각 실행의 **Artifacts** 에서 `AbleAEC-windows`, `AbleAEC-macos` 를 받아 바로 설치할 수 있습니다.

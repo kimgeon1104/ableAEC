@@ -20,9 +20,9 @@ flowchart LR
 
 ## 화면
 
-![[docs/plugin-ui.png]]
+![[docs/plugin-ui-ko.png]]
 
-플러그인 에디터를 Linux에서 오프스크린으로 렌더링한 모습입니다 (스피커 신호와 그 지연된 에코를 넣어 수렴시킨 상태). Windows/macOS에서는 글꼴이 다를 수 있습니다.
+한국어 / English 화면을 오른쪽 위에서 바꿀 수 있고(프로젝트에 저장), **설명서** 버튼으로 플러그인 안에서 사용법을 볼 수 있습니다. 각 조절기에 마우스를 올리면 설명이 나옵니다. 한글 글꼴(나눔고딕 기반, SIL OFL)이 플러그인에 들어 있어 어느 시스템에서나 같은 모습으로 보입니다. (스크린샷은 스피커 신호와 그 지연된 에코를 넣어 학습시킨 상태를 Linux에서 렌더링한 것)
 
 ## 특징
 
@@ -39,10 +39,11 @@ flowchart LR
 
 1. [[docs/build|빌드 가이드]]대로 빌드하거나, GitHub Actions 빌드 결과물(`AbleAEC-windows`, `AbleAEC-macos`)을 내려받습니다.
 2. `AbleAEC.vst3`를 VST3 폴더에 복사하고 Live에서 플러그인을 다시 검색합니다.
-3. [[docs/ableton-setup|Ableton 설정 가이드]]대로 마이크 트랙에 넣고 사이드체인을 스피커 트랙으로 지정합니다.
+3. [[docs/user-manual|사용 설명서]]대로 마이크 트랙에 넣고 사이드체인을 스피커 트랙으로 지정합니다.
 
 ## 문서
 
+- [[docs/user-manual|사용 설명서]]
 - [[docs/AbleAEC-MOC|문서 목차 (MOC)]]
 - [[docs/ableton-setup|Ableton Live 설정 가이드]]
 - [[docs/build|빌드 및 설치]]
@@ -53,8 +54,9 @@ flowchart LR
 
 ```
 src/dsp/        AEC 알고리즘 코어 (JUCE 의존성 없음)
-src/plugin/     JUCE 플러그인 래퍼 (사이드체인 버스, 파라미터, UI)
-tools/          aec_wav: WAV 파일 오프라인 AEC 처리 도구
+src/plugin/     JUCE 플러그인 래퍼 (사이드체인 버스, 파라미터, UI, 한/영 문구 UiStrings.h)
+resources/      UI 글꼴 (나눔고딕 서브셋, OFL)
+tools/          aec_wav: WAV 파일 오프라인 AEC 처리 도구, make_ui_font.py: UI 글꼴 생성
 tests/          오프라인 시뮬레이션 테스트, VST3 호스팅 종단 테스트, 실환경(보컬+반주) 테스트
 docs/           문서
 ```

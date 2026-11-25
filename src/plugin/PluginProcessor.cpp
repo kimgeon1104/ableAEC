@@ -278,6 +278,22 @@ void AbleAecProcessor::runBlock (int numMic) noexcept
 
 juce::AudioProcessorEditor* AbleAecProcessor::createEditor() { return new AbleAecEditor (*this); }
 
+ui::Lang AbleAecProcessor::getUiLanguage() const
+{
+    const auto v = apvts.state.getProperty ("uiLanguage").toString();
+    if (v == "ko") return ui::Lang::ko;
+    if (v == "en") return ui::Lang::en;
+    return juce::SystemStats::getUserLanguage().startsWithIgnoreCase ("ko")
+                   || juce::SystemStats::getDisplayLanguage().startsWithIgnoreCase ("ko")
+               ? ui::Lang::ko
+               : ui::Lang::en;
+}
+
+void AbleAecProcessor::setUiLanguage (ui::Lang l)
+{
+    apvts.state.setProperty ("uiLanguage", l == ui::Lang::ko ? "ko" : "en", nullptr);
+}
+
 void AbleAecProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     if (auto xml = apvts.copyState().createXml())

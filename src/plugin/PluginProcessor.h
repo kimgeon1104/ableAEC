@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AecCore.h"
+#include "UiStrings.h"
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
@@ -47,6 +48,10 @@ public:
 
     // UI -> audio
     void requestReset() noexcept { resetRequested.store (true); }
+
+    // Interface language, saved with the project (not automatable). Defaults to the system language.
+    ui::Lang getUiLanguage() const;
+    void setUiLanguage (ui::Lang l);
 
     // audio -> UI meters
     struct Meters

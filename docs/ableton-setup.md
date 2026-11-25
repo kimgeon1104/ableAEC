@@ -6,6 +6,8 @@ tags: [ableton, setup]
 
 # Ableton Live 설정 가이드
 
+간단한 사용법은 [[user-manual|사용 설명서]]를 보세요. 이 문서는 자세한 설정입니다.
+
 [[README|AbleAEC]]를 세션 뷰의 마이크 트랙에 넣고, 스피커로 나가는 트랙을 사이드체인으로 연결하는 방법입니다.
 설치는 [[build|빌드 및 설치]]를 참고하세요.
 
@@ -76,7 +78,9 @@ flowchart TB
 
 ## 화면 읽는 법
 
-![[plugin-ui.png]]
+![[plugin-ui-ko.png]]
+
+화면 언어는 오른쪽 위에서 `한국어` / `English` 로 바꿀 수 있습니다. 아래 표의 영어 이름과 한국어 화면 이름은 [[user-manual#6. 조절기|사용 설명서]]에 함께 정리되어 있습니다.
 
 
 - **Speaker / Mic in / Output** 미터: 사이드체인 참조, 마이크 입력, 처리 결과 레벨
