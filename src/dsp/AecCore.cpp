@@ -19,6 +19,9 @@ constexpr float kKalmanQ = 1.0e-8f;         // process-noise floor (keeps the fi
 constexpr float kKalmanP0 = 1.0f;           // initial state uncertainty
 constexpr float kPathChangeLeak = 0.5f;     // leakage above which the echo path is assumed to have changed
 constexpr double kPathChangeInflate = 1.5;  // growth of the state uncertainty per reference hop after a path change
+constexpr float kPathChangeMinEcho = 0.05f; // ... only while the filter predicts a real echo (>= -13 dB of the mic)
+constexpr double kPromoteSignificance = 4.0; // background must beat the foreground by ~2 sigma ...
+constexpr double kPromoteMinGain = 0.9;      // ... and by at least ~0.5 dB
 
 template <typename T>
 void zero (std::vector<T>& v) { std::fill (v.begin(), v.end(), T {}); }
@@ -117,6 +120,8 @@ void AecCore::resetFilter() noexcept
     leak = 1.0f;
     sFF = sDD = 0.0;
     davg1 = davg2 = dvar1 = dvar2 = 0.0;
+    accSf = accSb = accDbf = 0.0;
+    accCount = 0;
     micPowS = errPowS = 1e-9;
     erleDb = 0.0f;
     echoDelayMs = 0.0f;
@@ -208,35 +213,51 @@ void AecCore::processBlock (const float* const* refs, const float* mic, float* o
             const double d = (double) yF[(size_t) i] - yB[(size_t) i];
             dbf += d * d;
         }
-        dbf += 1.0e-9 * B;
-        const double diff = (double) sf - (double) sb; // > 0: background better
-        davg1 = 0.6 * davg1 + 0.4 * diff;
-        davg2 = 0.85 * davg2 + 0.15 * diff;
-        dvar1 = 0.36 * dvar1 + 0.16 * (double) sf * dbf;
-        dvar2 = 0.7225 * dvar2 + 0.0225 * (double) sf * dbf;
+        // Accumulate over ~10.7 ms regardless of the hop size so that short hops do not get more
+        // chances to pass the test by luck.
+        accSf += sf;
+        accSb += sb;
+        accDbf += dbf;
+        const int hopsPerDecision = std::max (1, (int) std::lround (1.0 / hopScale));
+        if (++accCount >= hopsPerDecision)
+        {
+            const double Sf = accSf, Sb = accSb, Dbf = accDbf + 1.0e-9 * B * accCount;
+            accSf = accSb = accDbf = 0.0;
+            accCount = 0;
 
-        const bool promote = diff * std::abs (diff) > (double) sf * dbf
-                             || davg1 * std::abs (davg1) > 0.5 * dvar1
-                             || davg2 * std::abs (davg2) > 0.25 * dvar2;
-        if (promote)
-        {
-            std::copy (Wbg.begin(), Wbg.begin() + wCount, Wfg.begin());
-            std::copy (yB.begin(), yB.end(), yF.begin());
-            std::copy (eB.begin(), eB.end(), eF.begin());
-            sf = sb;
-            davg1 = davg2 = dvar1 = dvar2 = 0.0;
-        }
-        else
-        {
-            constexpr double backtrack = 64.0; // lenient: Kalman steps can briefly raise the error while learning fast
-            const bool resetBg = -diff * std::abs (diff) > backtrack * (double) sf * dbf
-                                 || -davg1 * std::abs (davg1) > backtrack * dvar1
-                                 || -davg2 * std::abs (davg2) > backtrack * dvar2;
-            if (resetBg) // background disturbed (typically by double-talk): restart from foreground
+            const double diff = Sf - Sb; // > 0: background better
+            davg1 = 0.6 * davg1 + 0.4 * diff;
+            davg2 = 0.85 * davg2 + 0.15 * diff;
+            dvar1 = 0.36 * dvar1 + 0.16 * Sf * Dbf;
+            dvar2 = 0.7225 * dvar2 + 0.0225 * Sf * Dbf;
+
+            // Strict: with no (or very weak) echo the background can only "improve" by chasing the
+            // performer's voice by chance; promoting that would carve pieces out of the vocal.
+            const double sig = kPromoteSignificance;
+            const bool promote = Sb < kPromoteMinGain * Sf
+                                 && (diff * std::abs (diff) > sig * Sf * Dbf
+                                     || davg1 * std::abs (davg1) > sig * 0.5 * dvar1
+                                     || davg2 * std::abs (davg2) > sig * 0.25 * dvar2);
+            if (promote)
             {
-                std::copy (Wfg.begin(), Wfg.begin() + wCount, Wbg.begin());
-                std::copy (eF.begin(), eF.end(), eB.begin());
+                std::copy (Wbg.begin(), Wbg.begin() + wCount, Wfg.begin());
+                std::copy (yB.begin(), yB.end(), yF.begin());
+                std::copy (eB.begin(), eB.end(), eF.begin());
+                sf = sb;
                 davg1 = davg2 = dvar1 = dvar2 = 0.0;
+            }
+            else
+            {
+                constexpr double backtrack = 64.0; // lenient: Kalman steps can briefly raise the error while learning fast
+                const bool resetBg = -diff * std::abs (diff) > backtrack * Sf * Dbf
+                                     || -davg1 * std::abs (davg1) > backtrack * dvar1
+                                     || -davg2 * std::abs (davg2) > backtrack * dvar2;
+                if (resetBg) // background disturbed (typically by double-talk): restart from foreground
+                {
+                    std::copy (Wfg.begin(), Wfg.begin() + wCount, Wbg.begin());
+                    std::copy (eF.begin(), eF.end(), eB.begin());
+                    davg1 = davg2 = dvar1 = dvar2 = 0.0;
+                }
             }
         }
 
@@ -305,7 +326,9 @@ void AecCore::processBlock (const float* const* refs, const float* mic, float* o
 
         // Echo-path change (mic / speaker moved): the error is still strongly correlated with the echo
         // estimate, unlike near-end singing. Re-open the state uncertainty so the filter re-learns fast.
-        if (leak > kPathChangeLeak)
+        // The leakage estimate is meaningless while the echo estimate is ~0 (no echo reaches the mic),
+        // so this only applies when the foreground predicts a real echo.
+        if (leak > kPathChangeLeak && energy (yF.data(), B) > kPathChangeMinEcho * sd)
         {
             const float inflate = (float) std::pow (kPathChangeInflate, hopScale);
             for (auto& v : Pcov) v = std::min (kKalmanP0, v * inflate + 1.0e-6f);

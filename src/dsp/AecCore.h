@@ -127,6 +127,8 @@ private:
     // two-path control
     double sFF = 0.0, sDD = 0.0;                         // divergence guard
     double davg1 = 0.0, davg2 = 0.0, dvar1 = 0.0, dvar2 = 0.0; // foreground/background statistics
+    double accSf = 0.0, accSb = 0.0, accDbf = 0.0;              // energies accumulated per decision
+    int accCount = 0;
 
     // state / meters
     bool refActive = false;

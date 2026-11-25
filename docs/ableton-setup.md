@@ -60,11 +60,14 @@ flowchart TB
 | Residual Supp. | 20 % | 잔여 에코 억제 강도. 0 % = 끔. 높이면 반주는 더 줄지만 노래 중 보컬이 약간 뭉개질 수 있음 |
 | Supp. Floor | -18 dB | 잔여 에코 억제기의 최대 감쇄량 |
 | Output | Clean | `Clean`(AEC+억제), `Linear AEC only`, `Echo estimate`(추정 에코만, 확인용), `Raw mic`(원본, 지연만 맞춤) |
-| Latency | Quality (~21 ms) | `Quality`: 블록 512 (48 kHz), 음악에 권장. `Low (~11 ms)`: 블록 256, 음성/모노용 — **음악 반주에서는 성능이 크게 떨어짐** ([[realistic-test#해석|테스트 결과]]). 바꾸면 필터가 초기화됨 |
+| Latency | Quality (~21 ms) | `Quality`: hop 512 (48 kHz), 가장 안정적. `Low (~11 ms)`: hop 256 — 팝·EDM·말소리는 Quality와 비슷하지만 **피아노처럼 순음 위주인 음악에서는 크게 약함**, CPU 약 2배 ([[realistic-test#Low 모드 (지연 약 11 ms)|테스트 결과]]). 바꾸면 필터가 초기화됨 |
 | Reference | Stereo (L/R) | 스테레오 사이드체인을 L/R 따로 참조 (스피커 2대일 때 필수). `Mono (L+R)` 는 스피커 1대 또는 CPU 절약용 |
 | Freeze | off | 학습 정지 (현재 필터 유지) |
 | AEC Off | off | 처리 없이 원본 마이크를 내보냄 (지연은 동일하게 유지) |
 | Reset Filter | — | 학습된 필터 초기화 (마이크/스피커 위치를 크게 바꾼 뒤) |
+
+> [!note] 스피커 소리가 마이크에 잘 안 들어가는 경우
+> 스피커가 멀거나 마이크 인식 범위 밖이라 스피커 소리가 거의/전혀 안 들어가도 괜찮습니다. 에코가 없으면 AbleAEC는 목소리를 건드리지 않고 그대로 내보냅니다 (테스트: 보컬 SER 46.3 → 46.3 dB). 스피커 소리가 아주 약하게(목소리보다 20 dB 작게) 들어오는 경우에는 그것도 15–20 dB 더 줄이지만 목소리에 약간의 영향이 있으므로, 원래 깨끗하다면 `AEC Off` 도 선택지입니다.
 
 > [!tip] 노래 시작 전 반주를 10–20초 먼저 틀어두세요
 > 필터가 방의 반향을 배우는 데 반주 기준 수 초가 걸리고, 20초 전후에 가장 좋아집니다. 상태창의 `Echo reduction` 이 15 dB 이상이 된 뒤 녹음을 시작하면 좋습니다. 노래하는 동안에도 필터는 망가지지 않고 계속 학습합니다.
@@ -88,11 +91,11 @@ flowchart TB
 | ERLE가 계속 낮음 (< 6 dB) | 반주를 20초 이상 틀어도 낮으면: Latency가 `Quality` 인지, Reference가 `Stereo` 인지 확인. Echo delay 값이 Filter Length 끝 근처라면 Filter Length를 늘리거나 Ref Delay 지정. 스피커/마이크가 다른 장치인지 확인 |
 | 말할 때 목소리가 뭉개짐 | Residual Supp.를 낮추거나 Supp. Floor를 -15 dB 정도로 올림 |
 | 에코가 조금 남음 | Residual Supp. 를 높임. 스피커 볼륨이 너무 커서 왜곡되면 볼륨을 낮춤 |
-| 모니터링이 약간 늦게 들림 | 플러그인 지연 1024 샘플(Quality, 48 kHz에서 약 21 ms). 녹음은 Live가 자동 보정. 모니터링은 오디오 인터페이스의 다이렉트 모니터링을 쓰는 것을 권장. `Low` 모드는 지연이 절반이지만 음악에서 성능이 크게 떨어짐 |
+| 모니터링이 약간 늦게 들림 | 플러그인 지연 1024 샘플(Quality, 48 kHz에서 약 21 ms). 녹음은 Live가 자동 보정. 모니터링은 오디오 인터페이스의 다이렉트 모니터링을 쓰는 것을 권장. `Low` 모드는 지연이 절반 (피아노류 음악에서는 약함) |
 
 ## 관련 문서
 
 - [[AbleAEC-MOC|문서 목차]]
 - [[dsp-design|DSP 설계]]
-- [[realistic-test|보컬 + 반주 실환경 시뮬레이션 테스트]]
+- [[realistic-test|실환경 시뮬레이션 테스트]]
 - [[build|빌드 및 설치]]

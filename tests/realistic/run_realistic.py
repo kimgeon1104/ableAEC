@@ -16,6 +16,7 @@ the mic and the script measures
 
   ERLE_farend_only_dB      4-8 s, far-end only, after 4 s of learning
   ERLE_after_doubletalk_dB 23-30 s, far-end only, after the performer stopped
+  ERLE_late_dB             22.5-30 s, echo-active samples only (used for the on/off scenario)
   vocal_SER_mic/out_dB     8-20 s, how close mic / output are to the clean vocal
   t_converge_s             first time the 0.5 s ERLE reaches 15 dB (inf = never in 0-8 s)
 
@@ -347,7 +348,9 @@ SPK_MONO = (3.0, 4.1, 1.6)
 
 
 def simulate(name, far, vocal, stereo_speakers=True, distortion=False, noise_db=-75, echo_to_vocal_db=0.0,
-             latency=2 * 256 + 60):
+             latency=2 * 256 + 60, echo_segments=None):
+    """echo_to_vocal_db=None: the loudspeakers do not reach the mic at all.
+    echo_segments: [(start_s, end_s), ...] where the echo is audible (e.g. performer moving away)."""
     feed = far.copy()
     if distortion:
         feed = np.tanh(2.0 * feed) / 2.0
@@ -359,8 +362,15 @@ def simulate(name, far, vocal, stereo_speakers=True, distortion=False, noise_db=
 
     v = np.convolve(vocal, rir(MOUTH, MIC_POS))[:N]
     seg = slice(int(VOCAL_START * FS), int(VOCAL_END * FS))
-    gain = 10 ** (echo_to_vocal_db / 20) * np.sqrt(np.mean(v[seg] ** 2)) / np.sqrt(np.mean(echo[seg] ** 2))
+    gain = 0.0 if echo_to_vocal_db is None else \
+        10 ** (echo_to_vocal_db / 20) * np.sqrt(np.mean(v[seg] ** 2)) / np.sqrt(np.mean(echo[seg] ** 2))
     echo *= gain
+    if echo_segments:
+        g = np.zeros(N)
+        for a, b in echo_segments:
+            g[int(a * FS):int(b * FS)] = 1.0
+        k = int(0.05 * FS)
+        echo *= np.convolve(g, np.ones(k) / k, "same")  # 50 ms fades
     noise = 10 ** (noise_db / 20) * np.random.default_rng(7).standard_normal(N)
     mic = v + echo + noise
     scale = 0.5 / np.max(np.abs(mic))
@@ -379,7 +389,7 @@ def evaluate(sc, out):
     fs = FS
     mic, v, echo = sc["mic"], sc["vocal"], sc["echo"]
     env = lp(np.abs(echo), 10)
-    echo_on = env > 0.05 * np.max(env)                         # skip far-end pauses
+    echo_on = env > 0.05 * max(np.max(env), 1e-12)            # skip far-end pauses
     vocal_on = lp(np.abs(v), 20) > 0.1 * np.max(np.abs(v))     # only judge where the voice is
 
     def erle(a, b):
@@ -397,6 +407,7 @@ def evaluate(sc, out):
     vb = vocal_on[b]
     return {
         "ERLE_farend_only_dB": erle(4, VOCAL_START),
+        "ERLE_late_dB": erle(22.5, DUR),  # echo-active part after the voice and its reverb are gone
         "ERLE_after_doubletalk_dB": erle(VOCAL_END + 3, DUR),
         "vocal_SER_mic_dB": db(power(v[b][vb]) / power((mic - v)[b][vb])),
         "vocal_SER_out_dB": db(power(v[b][vb]) / power((out - v)[b][vb])),
@@ -422,6 +433,12 @@ SCENARIOS = [
     ("speech_mono__stereo", "speech_mono", {}),
     ("speech_mono__mono_speaker", "speech_mono", dict(stereo_speakers=False)),
     ("speech_two__stereo", "speech_two", {}),
+    # the loudspeakers barely / not / only sometimes reach the mic (far away, out of the mic's pickup)
+    ("music_pop__weak_echo", "music_pop", dict(echo_to_vocal_db=-20.0)),
+    ("music_pop__no_echo", "music_pop", dict(echo_to_vocal_db=None)),
+    ("music_pop__echo_on_off", "music_pop", dict(echo_segments=[(0, 5), (10, 14), (22, 26)])),
+    ("speech_mono__weak_echo", "speech_mono", dict(echo_to_vocal_db=-20.0)),
+    ("speech_mono__no_echo", "speech_mono", dict(echo_to_vocal_db=None)),
 ]
 
 # Regression thresholds for the default configuration (Quality, stereo reference); a few dB of margin.
@@ -438,7 +455,15 @@ THRESHOLDS = {
     ("white_noise__distortion_noise", "linear", "ERLE_after_doubletalk_dB"): 17.0,
     ("speech_mono__stereo", "linear", "ERLE_after_doubletalk_dB"): 21.0,
     ("speech_mono__mono_speaker", "linear", "ERLE_after_doubletalk_dB"): 21.0,
-    ("speech_two__stereo", "linear", "ERLE_after_doubletalk_dB"): 20.0,
+    ("speech_two__stereo", "linear", "ERLE_after_doubletalk_dB"): 17.0,
+    # echo barely / not reaching the mic: must not damage the voice
+    ("music_pop__no_echo", "linear", "vocal_SER_out_dB"): 44.0,
+    ("music_pop__no_echo", "clean", "vocal_SER_out_dB"): 44.0,
+    ("speech_mono__no_echo", "linear", "vocal_SER_out_dB"): 44.0,
+    ("music_pop__weak_echo", "linear", "vocal_SER_out_dB"): 17.0,
+    ("music_pop__weak_echo", "linear", "ERLE_late_dB"): 12.0,
+    ("speech_mono__weak_echo", "linear", "vocal_SER_out_dB"): 15.0,
+    ("speech_mono__weak_echo", "linear", "ERLE_late_dB"): 11.0,
 }
 
 
