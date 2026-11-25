@@ -1,0 +1,55 @@
+name: build
+
+on:
+  push:
+    branches: [main, "ccr-*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-24.04
+            cmake_args: -G Ninja -DCMAKE_BUILD_TYPE=Release
+          - name: windows
+            os: windows-latest
+            cmake_args: -A x64
+          - name: macos
+            os: macos-latest
+            cmake_args: -G Xcode "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libasound2-dev libx11-dev libxrandr-dev \
+            libxinerama-dev libxcursor-dev libxext-dev libfreetype-dev libfontconfig1-dev
+
+      - name: Configure
+        run: cmake -S . -B build ${{ matrix.cmake_args }}
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Collect plugin
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp -R build/AbleAEC_artefacts/Release/VST3/AbleAEC.vst3 dist/
+          if [ -d build/AbleAEC_artefacts/Release/AU ]; then cp -R build/AbleAEC_artefacts/Release/AU/AbleAEC.component dist/; fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AbleAEC-${{ matrix.name }}
+          path: dist
