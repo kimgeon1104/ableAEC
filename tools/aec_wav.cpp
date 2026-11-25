@@ -15,6 +15,7 @@
 //   --mode <clean|linear|echo|raw>             (default clean)
 //   --latency <low|quality>  block size ~5 ms / ~10 ms   (default quality)
 //   --monoref        sum a stereo ref to mono instead of using a stereo (2-channel) reference
+//   --auto           let the plugin choose filter length and residual suppression (Auto mode)
 //   --block <n>      explicit hop size (power of two), overrides --latency (for experiments)
 //   --partition <n>  explicit filter partition size (power of two, >= hop), overrides --latency
 //
@@ -139,6 +140,7 @@ int main (int argc, char** argv)
         else if (k == "--block") blockOverride = std::atoi (v);
         else if (k == "--partition") partitionOverride = std::atoi (v);
         else if (k == "--monoref") { monoRef = true; --i; }
+        else if (k == "--auto") { s.autoTune = true; --i; }
         else if (k == "--mode")
         {
             const std::string m = v;
@@ -200,5 +202,9 @@ int main (int argc, char** argv)
     std::printf ("processed %.2f s @ %d Hz | hop %d, partition %d | %s reference | final ERLE %.1f dB | echo delay %.1f ms\n",
                  (double) n / mic.sampleRate, mic.sampleRate, B, aec.getPartitionSize(), numRefs == 2 ? "stereo" : "mono",
                  aec.getErleDb(), aec.getEchoDelayMs() + refDelayMs);
+    if (s.autoTune)
+        std::printf ("auto: filter %.0f ms, residual suppression %.0f %%, floor %.0f dB, echo %s\n",
+                     aec.getEffectiveFilterLengthMs(), aec.getEffectiveResAmount() * 100.0f, aec.getEffectiveResFloorDb(),
+                     aec.isEchoPresent() ? "present" : "not detected");
     return 0;
 }

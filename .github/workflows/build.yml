@@ -49,6 +49,7 @@ jobs:
           python3 -m pip install --user numpy scipy fonttools
           python3 tools/make_ui_font.py --check
           python3 tests/realistic/run_realistic.py --check build/aec_wav build/realistic
+          python3 tests/realistic/run_realistic.py --check --only music_pop__stereo,music_pop__no_echo,speech_mono__no_echo,music_pop__weak_echo build/aec_wav build/realistic_auto --auto
 
       - name: Collect plugin
         shell: bash
@@ -56,6 +57,8 @@ jobs:
           mkdir -p dist
           cp -R build/AbleAEC_artefacts/Release/VST3/AbleAEC.vst3 dist/
           if [ -d build/AbleAEC_artefacts/Release/AU ]; then cp -R build/AbleAEC_artefacts/Release/AU/AbleAEC.component dist/; fi
+          mkdir -p dist/App
+          cp -R build/AbleAEC_artefacts/Release/Standalone/. dist/App/
 
       - uses: actions/upload-artifact@v4
         with:

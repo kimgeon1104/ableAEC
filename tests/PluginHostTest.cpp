@@ -185,6 +185,42 @@ int main (int argc, char** argv)
         check (maxErr < 1e-4, "without sidechain the plugin passes the mic through");
     }
 
+    // 4. presets (host programs) and MIDI control
+    {
+        auto* res = findParam (*plugin, "Residual Suppression");
+        auto* autoP = findParam (*plugin, "Auto");
+        const int programs = plugin->getNumPrograms();
+        std::printf ("  programs: %d (", programs);
+        for (int i = 0; i < juce::jmin (programs, 7); ++i)
+            std::printf ("%s%s", i ? ", " : "", plugin->getProgramName (i).toRawUTF8());
+        std::printf (")\n");
+        check (programs >= 7, "built-in presets are exposed as host programs");
+
+        plugin->setCurrentProgram (2); // Talk / call
+        const auto talkRes = res != nullptr ? res->getText (res->getValue(), 32) : juce::String();
+        plugin->setCurrentProgram (1); // Singing
+        const auto singRes = res != nullptr ? res->getText (res->getValue(), 32) : juce::String();
+        const bool singAuto = autoP != nullptr && autoP->getValue() > 0.5f;
+        std::printf ("  Talk/call residual suppression %s, Singing %s (Auto %s)\n", talkRes.toRawUTF8(), singRes.toRawUTF8(),
+                     singAuto ? "on" : "off");
+        check (talkRes == "40 %" && singRes == "15 %" && singAuto, "presets set their values");
+
+        // MIDI CC 23 (default: Residual Supp.) and CC 25 (Auto)
+        plugin->prepareToPlay (kSr, 512);
+        const int numCh = juce::jmax (plugin->getTotalNumInputChannels(), plugin->getTotalNumOutputChannels());
+        juce::AudioBuffer<float> buf (numCh, 512);
+        buf.clear();
+        juce::MidiBuffer midi;
+        midi.addEvent (juce::MidiMessage::controllerEvent (1, 23, 127), 0);
+        midi.addEvent (juce::MidiMessage::controllerEvent (1, 25, 0), 1);
+        plugin->processBlock (buf, midi);
+        plugin->releaseResources();
+        const auto midiRes = res != nullptr ? res->getText (res->getValue(), 32) : juce::String();
+        std::printf ("  after CC23=127, CC25=0: residual suppression %s, Auto %s\n", midiRes.toRawUTF8(),
+                     autoP != nullptr && autoP->getValue() > 0.5f ? "on" : "off");
+        check (midiRes == "100 %" && autoP != nullptr && autoP->getValue() < 0.5f, "MIDI CC moves the mapped controls");
+    }
+
     plugin.reset();
     std::printf (failures == 0 ? "ALL PASSED\n" : "%d FAILURE(S)\n", failures);
     return failures == 0 ? 0 : 1;

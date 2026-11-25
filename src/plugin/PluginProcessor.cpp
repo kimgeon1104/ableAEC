@@ -24,8 +24,12 @@ AbleAecProcessor::AbleAecProcessor()
     pFreeze = apvts.getRawParameterValue ("freeze");
     pMode = apvts.getRawParameterValue ("mode");
     pBypass = apvts.getRawParameterValue ("aecOff");
+    pAuto = apvts.getRawParameterValue ("auto");
     pLatency = apvts.getRawParameterValue ("latency");
     pRefMode = apvts.getRawParameterValue ("refMode");
+
+    resetMidiMap();
+    reloadUserPresets();
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout AbleAecProcessor::createLayout()
@@ -56,6 +60,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout AbleAecProcessor::createLayo
     l.add (std::make_unique<AudioParameterChoice> (ParameterID { "mode", 1 }, "Output",
                                                    StringArray { "Clean", "Linear AEC only", "Echo estimate", "Raw mic" }, 0));
     l.add (std::make_unique<AudioParameterBool> (ParameterID { "aecOff", 1 }, "AEC Off", false));
+    l.add (std::make_unique<AudioParameterBool> (ParameterID { "auto", 1 }, "Auto", false));
     l.add (std::make_unique<AudioParameterChoice> (ParameterID { "latency", 1 }, "Latency",
                                                    StringArray { "Quality (~21 ms)", "Low (~11 ms)" }, 0));
     l.add (std::make_unique<AudioParameterChoice> (ParameterID { "refMode", 1 }, "Reference",
@@ -136,14 +141,20 @@ ableaec::AecSettings AbleAecProcessor::readSettings() const noexcept
     s.resAmount = pResAmount->load();
     s.resFloorDb = pResFloor->load();
     s.freeze = pFreeze->load() > 0.5f;
+    s.autoTune = pAuto->load() > 0.5f;
     s.mode = pBypass->load() > 0.5f ? ableaec::OutputMode::RawMic
                                     : (ableaec::OutputMode) juce::jlimit (0, 3, (int) pMode->load());
     return s;
 }
 
-void AbleAecProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
+void AbleAecProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
 {
     juce::ScopedNoDenormals noDenormals;
+
+    handleMidi (midi);
+    midi.clear();
+    if (wrapperType == wrapperType_Standalone)
+        applyInputRouting (buffer);
 
     const int wantedMode = juce::jlimit (0, kNumLatencyModes - 1, (int) pLatency->load());
     if (wantedMode != activeMode)
@@ -261,6 +272,10 @@ void AbleAecProcessor::runBlock (int numMic) noexcept
     meters.echoDelayMs.store (c0.getEchoDelayMs() + pRefDelay->load());
     meters.leakage.store (c0.getLeakage());
     meters.converged.store (c0.isConverged());
+    meters.effFilterMs.store (c0.getEffectiveFilterLengthMs());
+    meters.effResAmount.store (c0.getEffectiveResAmount());
+    meters.effResFloorDb.store (c0.getEffectiveResFloorDb());
+    meters.echoPresent.store (c0.isEchoPresent());
 
     // fall ~28 dB/s regardless of block size
     const float fall = 28.0f * (float) B / (float) currentSampleRate;
@@ -296,15 +311,281 @@ void AbleAecProcessor::setUiLanguage (ui::Lang l)
 
 void AbleAecProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
-    if (auto xml = apvts.copyState().createXml())
+    auto state = apvts.copyState();
+    state.setProperty ("currentPreset", currentPreset.load(), nullptr);
+    state.setProperty ("inputRouting", inputRouting.load(), nullptr);
+    state.removeChild (state.getChildWithName ("MIDI"), nullptr);
+    juce::ValueTree midiMap ("MIDI");
+    for (int t = 0; t < ctl::numTargets; ++t)
+        midiMap.setProperty ("cc" + juce::String (t), midiCc[(size_t) t].load(), nullptr);
+    state.appendChild (midiMap, nullptr);
+    if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
 
 void AbleAecProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
-    if (auto xml = getXmlFromBinary (data, sizeInBytes))
-        if (xml->hasTagName (apvts.state.getType()))
-            apvts.replaceState (juce::ValueTree::fromXml (*xml));
+    auto xml = getXmlFromBinary (data, sizeInBytes);
+    if (xml == nullptr || ! xml->hasTagName (apvts.state.getType()))
+        return;
+    auto state = juce::ValueTree::fromXml (*xml);
+    if (auto midiMap = state.getChildWithName ("MIDI"); midiMap.isValid())
+    {
+        for (int t = 0; t < ctl::numTargets; ++t)
+            if (midiMap.hasProperty ("cc" + juce::String (t)))
+                midiCc[(size_t) t].store ((int) midiMap["cc" + juce::String (t)]);
+        state.removeChild (midiMap, nullptr);
+    }
+    currentPreset.store ((int) state.getProperty ("currentPreset", currentPreset.load()));
+    inputRouting.store ((int) state.getProperty ("inputRouting", 0));
+    apvts.replaceState (state);
+}
+
+//==============================================================================
+// presets
+
+juce::File AbleAecProcessor::getUserPresetFolder()
+{
+   #if JUCE_MAC
+    auto base = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("Application Support");
+   #else
+    auto base = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory);
+   #endif
+    return base.getChildFile ("AbleAEC").getChildFile ("Presets");
+}
+
+void AbleAecProcessor::reloadUserPresets()
+{
+    userPresets.clear();
+    for (const auto& f : getUserPresetFolder().findChildFiles (juce::File::findFiles, false, "*.xml"))
+        if (auto xml = juce::XmlDocument::parse (f); xml != nullptr && xml->hasTagName ("AbleAECPreset"))
+            userPresets.add ({ xml->getStringAttribute ("name", f.getFileNameWithoutExtension()), f });
+    std::sort (userPresets.begin(), userPresets.end(),
+               [] (const UserPreset& a, const UserPreset& b) { return a.name.compareNatural (b.name) < 0; });
+}
+
+juce::String AbleAecProcessor::getPresetName (int index, ui::Lang lang) const
+{
+    const int nf = (int) ctl::factoryPresets().size();
+    if (index >= 0 && index < nf)
+        return ui::tr (ctl::factoryPresets()[(size_t) index].name, lang);
+    if (index >= nf && index < nf + userPresets.size())
+        return userPresets[index - nf].name;
+    return {};
+}
+
+void AbleAecProcessor::applyPreset (int index)
+{
+    const int nf = (int) ctl::factoryPresets().size();
+    if (index < 0 || index >= getNumPresets())
+        return;
+
+    // start from the defaults so a preset fully defines the sound
+    for (auto* id : ctl::presetParamIds())
+        if (auto* p = apvts.getParameter (id))
+            p->setValueNotifyingHost (p->getDefaultValue());
+
+    if (index < nf)
+    {
+        for (const auto& [id, value] : ctl::factoryPresets()[(size_t) index].values)
+            setParamReal (id, value);
+    }
+    else if (auto xml = juce::XmlDocument::parse (userPresets[index - nf].file))
+    {
+        for (auto* e : xml->getChildWithTagNameIterator ("PARAM"))
+            setParamReal (e->getStringAttribute ("id").toRawUTF8(), (float) e->getDoubleAttribute ("value"));
+    }
+    currentPreset.store (index);
+    updateHostDisplay (ChangeDetails().withProgramChanged (true));
+}
+
+bool AbleAecProcessor::saveUserPreset (const juce::String& rawName)
+{
+    const auto name = rawName.trim();
+    if (name.isEmpty())
+        return false;
+    auto folder = getUserPresetFolder();
+    if (! folder.createDirectory())
+        return false;
+
+    juce::XmlElement xml ("AbleAECPreset");
+    xml.setAttribute ("name", name);
+    xml.setAttribute ("version", JucePlugin_VersionString);
+    for (auto* id : ctl::presetParamIds())
+        if (auto* p = dynamic_cast<juce::RangedAudioParameter*> (apvts.getParameter (id)))
+        {
+            auto* e = xml.createNewChildElement ("PARAM");
+            e->setAttribute ("id", id);
+            e->setAttribute ("value", p->convertFrom0to1 (p->getValue()));
+        }
+    const auto file = folder.getChildFile (juce::File::createLegalFileName (name) + ".xml");
+    if (! xml.writeTo (file))
+        return false;
+
+    reloadUserPresets();
+    for (int i = 0; i < userPresets.size(); ++i)
+        if (userPresets[i].file == file)
+            currentPreset.store ((int) ctl::factoryPresets().size() + i);
+    updateHostDisplay (ChangeDetails().withProgramChanged (true));
+    return true;
+}
+
+bool AbleAecProcessor::deleteUserPreset (int index)
+{
+    const int nf = (int) ctl::factoryPresets().size();
+    if (index < nf || index >= getNumPresets())
+        return false;
+    const bool ok = userPresets[index - nf].file.deleteFile();
+    reloadUserPresets();
+    currentPreset.store (0);
+    updateHostDisplay (ChangeDetails().withProgramChanged (true));
+    return ok;
+}
+
+void AbleAecProcessor::setCurrentProgram (int index)
+{
+    if (juce::MessageManager::existsAndIsCurrentThread())
+        applyPreset (index);
+    else
+    {
+        pendingPreset.store (index);
+        triggerAsyncUpdate();
+    }
+}
+
+void AbleAecProcessor::stepPreset (int delta)
+{
+    const int n = getNumPresets();
+    if (n > 0)
+        applyPreset (((juce::jmax (0, currentPreset.load()) + delta) % n + n) % n);
+}
+
+void AbleAecProcessor::handleAsyncUpdate()
+{
+    if (const int p = pendingPreset.exchange (-1); p >= 0)
+        applyPreset (p);
+    if (const int d = pendingPresetStep.exchange (0); d != 0)
+        stepPreset (d);
+}
+
+//==============================================================================
+// parameter actions (shared by MIDI and keyboard shortcuts)
+
+void AbleAecProcessor::setParamReal (const char* id, float value)
+{
+    if (auto* p = dynamic_cast<juce::RangedAudioParameter*> (apvts.getParameter (id)))
+        p->setValueNotifyingHost (p->convertTo0to1 (p->getNormalisableRange().snapToLegalValue (value)));
+}
+
+void AbleAecProcessor::nudgeParam (const char* id, float delta)
+{
+    if (auto* p = dynamic_cast<juce::RangedAudioParameter*> (apvts.getParameter (id)))
+        setParamReal (id, p->convertFrom0to1 (p->getValue()) + delta);
+}
+
+void AbleAecProcessor::toggleParam (const char* id)
+{
+    if (auto* p = apvts.getParameter (id))
+        p->setValueNotifyingHost (p->getValue() > 0.5f ? 0.0f : 1.0f);
+}
+
+void AbleAecProcessor::cycleChoice (const char* id)
+{
+    if (auto* p = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter (id)))
+        p->setValueNotifyingHost (p->convertTo0to1 ((float) ((p->getIndex() + 1) % p->choices.size())));
+}
+
+//==============================================================================
+// MIDI
+
+void AbleAecProcessor::resetMidiMap()
+{
+    for (int t = 0; t < ctl::numTargets; ++t)
+        midiCc[(size_t) t].store (ctl::info ((ctl::Target) t).defaultCc);
+    lastCcValue.fill (0);
+}
+
+void AbleAecProcessor::handleMidi (const juce::MidiBuffer& midi) noexcept
+{
+    for (const auto meta : midi)
+    {
+        const auto msg = meta.getMessage();
+        if (msg.isProgramChange())
+        {
+            pendingPreset.store (msg.getProgramChangeNumber());
+            triggerAsyncUpdate();
+            continue;
+        }
+        if (! msg.isController())
+            continue;
+
+        const int cc = msg.getControllerNumber();
+        const int value = msg.getControllerValue();
+
+        if (const int learn = midiLearn.exchange (-1); learn >= 0)
+        {
+            for (auto& m : midiCc) // one CC drives one target
+                if (m.load() == cc) m.store (-1);
+            midiCc[(size_t) learn].store (cc);
+            lastCcValue[(size_t) learn] = value;
+            continue;
+        }
+
+        for (int t = 0; t < ctl::numTargets; ++t)
+        {
+            if (midiCc[(size_t) t].load() != cc)
+                continue;
+            const auto& inf = ctl::info ((ctl::Target) t);
+            const bool rising = value >= 64 && lastCcValue[(size_t) t] < 64;
+            lastCcValue[(size_t) t] = value;
+            auto* param = inf.paramId != nullptr ? apvts.getParameter (inf.paramId) : nullptr;
+
+            switch (inf.kind)
+            {
+                case ctl::Kind::continuous:
+                    if (param != nullptr) param->setValueNotifyingHost ((float) value / 127.0f);
+                    break;
+                case ctl::Kind::toggle:
+                    if (param != nullptr) param->setValueNotifyingHost (value >= 64 ? 1.0f : 0.0f);
+                    break;
+                case ctl::Kind::choice:
+                    if (auto* choice = dynamic_cast<juce::AudioParameterChoice*> (param))
+                    {
+                        const int n = choice->choices.size();
+                        choice->setValueNotifyingHost (choice->convertTo0to1 ((float) juce::jmin (n - 1, value * n / 128)));
+                    }
+                    break;
+                case ctl::Kind::trigger:
+                    if (! rising) break;
+                    if ((ctl::Target) t == ctl::Target::reset) requestReset();
+                    else
+                    {
+                        pendingPresetStep.fetch_add ((ctl::Target) t == ctl::Target::presetNext ? 1 : -1);
+                        triggerAsyncUpdate();
+                    }
+                    break;
+            }
+        }
+    }
+}
+
+//==============================================================================
+// app input routing
+
+void AbleAecProcessor::setInputRouting (InputRouting r)
+{
+    inputRouting.store ((int) r);
+}
+
+void AbleAecProcessor::applyInputRouting (juce::AudioBuffer<float>& buffer) noexcept
+{
+    // "1 mic, 2 speaker": device input 1 is the mic (to both main channels), input 2 the reference
+    if (getInputRouting() != InputRouting::mic1Ref2 || buffer.getNumChannels() < 4)
+        return;
+    const int n = buffer.getNumSamples();
+    buffer.copyFrom (2, 0, buffer, 1, 0, n);
+    buffer.copyFrom (3, 0, buffer, 1, 0, n);
+    buffer.copyFrom (1, 0, buffer, 0, 0, n);
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new AbleAecProcessor(); }
