@@ -23,6 +23,17 @@ constexpr float kPathChangeMinEcho = 0.05f; // ... only while the filter predict
 constexpr double kPromoteSignificance = 4.0; // background must beat the foreground by ~2 sigma ...
 constexpr double kPromoteMinGain = 0.9;      // ... and by at least ~0.5 dB
 
+// Delay-jump tracker
+constexpr double kDlyWindowSec = 0.15;    // analysis window (mic and echo estimate)
+constexpr double kDlyMaxLagSec = 0.03;    // largest jump that is followed (+-30 ms)
+constexpr float kDlyMinEchoRatio = 0.1f;  // echo estimate must be >= -10 dB of the mic in the window
+constexpr float kDlyMinCorr = 0.3f;       // normalised correlation at the new lag ...
+constexpr float kDlyMinCorrGain = 0.02f;  // ... and how much better it must be than at the current alignment
+constexpr float kDlyMinPhatRatio = 1.5f;  // GCC-PHAT peak vs its value at the current alignment
+constexpr float kPauseBelowPeak = 1.0e-3f; // reference 30 dB below its recent level = far end paused
+constexpr double kPauseMinSec = 0.2;       // pause long enough for a playback stream to restart
+constexpr double kOnsetWindowSec = 0.6;    // a jump found within this time after an onset undoes the adaptation since the onset
+
 template <typename T>
 void zero (std::vector<T>& v) { std::fill (v.begin(), v.end(), T {}); }
 
@@ -88,6 +99,21 @@ void AecCore::prepare (double sampleRate, float maxFilterLengthMs, int blockSize
     RY.assign ((size_t) Kr, cpx {});
     gain.assign ((size_t) Kr, 1.0f);
 
+    Md = 1;
+    while (Md < (int) (kDlyWindowSec * sr)) Md *= 2;
+    Nd = 2 * Md;
+    maxLag = std::min (Md / 2, (int) std::lround (kDlyMaxLagSec * sr));
+    fftDly.prepare (Nd);
+    dlyMic.assign ((size_t) Md, 0.0f);
+    dlyY.assign ((size_t) Md, 0.0f);
+    dlyFrame.assign ((size_t) Nd, 0.0f);
+    DM.assign ((size_t) Md + 1, cpx {});
+    DY.assign ((size_t) Md + 1, cpx {});
+    shiftBuf.assign ((size_t) (Pmax + 1) * (size_t) L, 0.0f);
+    ckWfg.assign (wsize, cpx {});
+    ckWbg.assign (wsize, cpx {});
+    ckPc.assign (wsize, kKalmanP0);
+
     P = 1;
     setSettings (settings);
     reset();
@@ -102,6 +128,14 @@ void AecCore::reset()
     zero (ola);
     zero (prevMic);
     zero (prevY);
+    zero (dlyMic);
+    zero (dlyY);
+    dlyPos = dlyFill = dlyCounter = 0;
+    lagVote = lagVotes = 0;
+    realignCount = 0;
+    refLevel = 0.0;
+    pauseSec = sinceOnsetSec = 0.0;
+    haveCheckpoint = false;
     std::fill (gain.begin(), gain.end(), 1.0f);
     xHead = 0;
     resetFilter();
@@ -130,6 +164,8 @@ void AecCore::resetFilter() noexcept
     activeSeconds = 0.0;
     echoPresent = false;
     growVotes = shrinkVotes = 0;
+    haveCheckpoint = false; // never bring back a filter from before the reset
+    lagVotes = 0;
 }
 
 void AecCore::setActiveRefs (int n) noexcept
@@ -204,6 +240,7 @@ void AecCore::processBlock (const float* const* refs, const float* mic, float* o
         sx += energy (refs[c], B);
     }
     refActive = sx / (float) (B * Ca) > kRefActiveThreshold;
+    detectOnset (sx / (float) (B * Ca));
 
     // ---------------------------------------------------------------- 2. both filters
     filter (Wfg, yF.data());
@@ -393,6 +430,9 @@ void AecCore::processBlock (const float* const* refs, const float* mic, float* o
         }
     }
 
+    if (! settings.freeze)
+        trackDelayJump (curMic, yF.data());
+
     if (++blockCounter >= std::max (1, 8192 / B))
     {
         blockCounter = 0;
@@ -533,6 +573,174 @@ void AecCore::constrainPartition (int c, int p) noexcept
     fft.inverse (w, frame.data());
     std::fill (frame.begin() + L, frame.end(), 0.0f);
     fft.forward (frame.data(), w);
+}
+
+void AecCore::detectOnset (float refPow) noexcept
+{
+    // Talk-spurt onsets after a pause are where a playback stream restart shows up as a delay jump.
+    // The filter state at the onset is kept so that, if a jump is found shortly after, the few
+    // hundred ms of adaptation on misaligned data can be undone before the filter is shifted.
+    const double hopSec = B / sr;
+    refLevel = std::max ((double) refPow, refLevel * std::pow (0.1, hopSec / 10.0)); // falls 10 dB per 10 s
+    const bool paused = ! refActive || refPow < kPauseBelowPeak * refLevel;
+    if (paused)
+    {
+        pauseSec += hopSec;
+        return;
+    }
+    if (pauseSec >= kPauseMinSec && ! settings.freeze)
+    {
+        std::copy (Wfg.begin(), Wfg.end(), ckWfg.begin());
+        std::copy (Wbg.begin(), Wbg.end(), ckWbg.begin());
+        std::copy (Pcov.begin(), Pcov.end(), ckPc.begin());
+        sinceOnsetSec = 0.0;
+        haveCheckpoint = true;
+    }
+    pauseSec = 0.0;
+    sinceOnsetSec += hopSec;
+}
+
+void AecCore::trackDelayJump (const float* mic, const float* y) noexcept
+{
+    // ring buffers of the newest Md samples
+    for (int i = 0; i < B; ++i)
+    {
+        dlyMic[(size_t) dlyPos] = mic[i];
+        dlyY[(size_t) dlyPos] = y[i];
+        dlyPos = (dlyPos + 1) % Md;
+    }
+    dlyFill = std::min (Md, dlyFill + B);
+    dlyCounter += B;
+    // Jumps happen at talk-spurt onsets, so check often (every quarter window) during the first second
+    // after one and only every two windows otherwise.
+    const int interval = sinceOnsetSec < 1.0 ? Md / 4 : 2 * Md;
+    if (dlyFill < Md || dlyCounter < interval)
+        return;
+    dlyCounter = 0;
+
+    double em = 0.0, ey = 0.0;
+    for (int i = 0; i < Md; ++i)
+    {
+        em += (double) dlyMic[(size_t) i] * dlyMic[(size_t) i];
+        ey += (double) dlyY[(size_t) i] * dlyY[(size_t) i];
+    }
+    if (ey < kDlyMinEchoRatio * em || ey < 1.0e-7 * Md)
+    {
+        lagVotes = 0;
+        return;
+    }
+
+    // GCC-PHAT between mic and echo estimate (oldest sample first, zero padded to 2 Md)
+    auto spectrum = [this] (const std::vector<float>& ring, std::vector<cpx>& S)
+    {
+        for (int i = 0; i < Md; ++i) dlyFrame[(size_t) i] = ring[(size_t) ((dlyPos + i) % Md)];
+        std::fill (dlyFrame.begin() + Md, dlyFrame.end(), 0.0f);
+        fftDly.forward (dlyFrame.data(), S.data());
+    };
+    spectrum (dlyMic, DM);
+    spectrum (dlyY, DY);
+    for (int k = 0; k <= Md; ++k)
+    {
+        const cpx g = DM[(size_t) k] * std::conj (DY[(size_t) k]);
+        const float mag = std::abs (g);
+        DM[(size_t) k] = mag > 1.0e-20f ? g / mag : cpx {};
+    }
+    fftDly.inverse (DM.data(), dlyFrame.data()); // r[l] = sum m(t + l) y(t); negative lags wrap
+    int best = 0;
+    const float phat0 = dlyFrame[0];
+    float bestVal = phat0;
+    for (int l = -maxLag; l <= maxLag; ++l)
+    {
+        const float v = dlyFrame[(size_t) (l >= 0 ? l : Nd + l)];
+        if (v > bestVal) { bestVal = v; best = l; }
+    }
+    // +-1 sample is left to the adaptation (a fractional delay would make the peak flicker)
+    if (std::abs (best) <= 1 || bestVal < kDlyMinPhatRatio * std::max (phat0, 0.0f))
+    {
+        lagVotes = 0;
+        return;
+    }
+
+    // confirm with the plain normalised correlation (PHAT peaks can be spurious)
+    auto corr = [this, em, ey] (int lag)
+    {
+        double s = 0.0;
+        for (int t = std::max (0, -lag); t < Md - std::max (0, lag); ++t)
+            s += (double) dlyMic[(size_t) ((dlyPos + t + lag) % Md)] * dlyY[(size_t) ((dlyPos + t) % Md)];
+        return (float) (s / std::sqrt (em * ey + 1.0e-30));
+    };
+    const float cBest = corr (best), cZero = corr (0);
+    if (cBest < kDlyMinCorr || cBest < cZero + kDlyMinCorrGain)
+    {
+        lagVotes = 0;
+        return;
+    }
+
+    // two consecutive checks must agree (to within a sample)
+    if (lagVotes > 0 && std::abs (best - lagVote) <= 1)
+        ++lagVotes;
+    else
+    {
+        lagVote = best;
+        lagVotes = 1;
+    }
+    if (lagVotes < 2)
+        return;
+
+    if (haveCheckpoint && sinceOnsetSec < kOnsetWindowSec)
+    {
+        std::copy (ckWfg.begin(), ckWfg.end(), Wfg.begin());
+        std::copy (ckWbg.begin(), ckWbg.end(), Wbg.begin());
+        std::copy (ckPc.begin(), ckPc.end(), Pcov.begin());
+    }
+    haveCheckpoint = false;
+    shiftFilters (best);
+    ++realignCount;
+    lagVotes = 0;
+    // the history no longer matches the shifted filter
+    zero (dlyMic);
+    zero (dlyY);
+    dlyFill = 0;
+}
+
+void AecCore::shiftFilters (int d) noexcept
+{
+    // Delay every learned impulse response by d samples (d < 0: advance) and re-partition it.
+    const int total = P * L;
+    for (auto* W : { &Wfg, &Wbg })
+        for (int c = 0; c < Ca; ++c)
+        {
+            float* h = shiftBuf.data();
+            for (int p = 0; p < P; ++p)
+            {
+                fft.inverse (W->data() + widx (c, p), frame.data());
+                std::copy (frame.begin(), frame.begin() + L, h + (size_t) p * (size_t) L);
+            }
+            if (d > 0)
+            {
+                std::copy_backward (h, h + total - d, h + total);
+                std::fill (h, h + d, 0.0f);
+            }
+            else
+            {
+                std::copy (h - d, h + total, h);
+                std::fill (h + total + d, h + total, 0.0f);
+            }
+            for (int p = 0; p < P; ++p)
+            {
+                std::copy (h + (size_t) p * (size_t) L, h + (size_t) (p + 1) * (size_t) L, frame.begin());
+                std::fill (frame.begin() + L, frame.end(), 0.0f);
+                fft.forward (frame.data(), W->data() + widx (c, p));
+            }
+        }
+    // statistics that refer to the old alignment
+    davg1 = davg2 = dvar1 = dvar2 = 0.0;
+    accSf = accSb = accDbf = 0.0;
+    accCount = 0;
+    zero (meanE);
+    zero (meanY);
+    pey = 0.0;
+    pyy = 1.0;
 }
 
 void AecCore::updateDelayEstimate() noexcept
