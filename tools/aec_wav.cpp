@@ -202,6 +202,8 @@ int main (int argc, char** argv)
     std::printf ("processed %.2f s @ %d Hz | hop %d, partition %d | %s reference | final ERLE %.1f dB | echo delay %.1f ms\n",
                  (double) n / mic.sampleRate, mic.sampleRate, B, aec.getPartitionSize(), numRefs == 2 ? "stereo" : "mono",
                  aec.getErleDb(), aec.getEchoDelayMs() + refDelayMs);
+    if (aec.getRealignCount() > 0)
+        std::printf ("echo delay jumps followed: %d\n", aec.getRealignCount());
     if (s.autoTune)
         std::printf ("auto: filter %.0f ms, residual suppression %.0f %%, floor %.0f dB, echo %s\n",
                      aec.getEffectiveFilterLengthMs(), aec.getEffectiveResAmount() * 100.0f, aec.getEffectiveResFloorDb(),

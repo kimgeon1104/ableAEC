@@ -95,6 +95,8 @@ public:
     float getEffectiveResAmount() const noexcept { return settings.autoTune ? autoRes : settings.resAmount; }
     float getEffectiveResFloorDb() const noexcept { return settings.autoTune ? autoFloorDb : settings.resFloorDb; }
     bool isEchoPresent() const noexcept { return echoPresent; }
+    // Number of times the filter was re-aligned to a sudden change of the echo delay.
+    int getRealignCount() const noexcept { return realignCount; }
 
 private:
     size_t widx (int c, int p) const noexcept { return ((size_t) c * (size_t) Pmax + (size_t) p) * (size_t) K; }
@@ -111,6 +113,9 @@ private:
     void applyFilterLength (float ms) noexcept;
     void autoTuneStep (float micEnergy) noexcept;
     int tailPartition() noexcept;
+    void trackDelayJump (const float* mic, const float* y) noexcept;
+    void detectOnset (float refPow) noexcept;
+    void shiftFilters (int samples) noexcept;
 
     double sr = 48000.0;
     int B = 256;          // hop (block) size
@@ -151,6 +156,20 @@ private:
     double erlePeak = 0.0, echoRatioS = 0.0, activeSeconds = 0.0;
     bool echoPresent = false;
     int autoCounter = 0, growVotes = 0, shrinkVotes = 0;
+
+    // delay-jump tracker: cross-correlates the mic with the foreground echo estimate. When the
+    // playback / capture path restarts (e.g. a voice-chat app stops sending audio between talk
+    // spurts) the echo can arrive a few ms earlier or later; shifting the learned filter by that
+    // amount restores cancellation at once instead of re-learning the whole room.
+    Fft fftDly;
+    int Md = 16384, Nd = 32768, maxLag = 1440, dlyPos = 0, dlyFill = 0, dlyCounter = 0;
+    int lagVote = 0, lagVotes = 0, realignCount = 0;
+    std::vector<float> dlyMic, dlyY, dlyFrame, shiftBuf;
+    std::vector<cpx> DM, DY;
+    std::vector<cpx> ckWfg, ckWbg;      // filter state at the last talk-spurt onset
+    std::vector<float> ckPc;
+    double refLevel = 0.0, pauseSec = 0.0, sinceOnsetSec = 0.0;
+    bool haveCheckpoint = false;
 
     // residual suppressor (own STFT of size 2B)
     Fft fftRes;

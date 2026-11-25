@@ -4,6 +4,8 @@
 //  Phase A  0-10 s : far-end only (single talk)          -> measure ERLE
 //  Phase B 10-16 s : far-end + near-end (double talk)     -> measure near-end preservation
 //  Phase C 16-26 s : far-end only, echo path changed      -> measure re-convergence
+//  Talk spurts      : far end in spurts with pauses, the echo delay jumping at each onset
+//                     (voice-chat playback restarting)   -> filter must follow the jump
 
 #include "../src/dsp/AecCore.h"
 
@@ -119,6 +121,44 @@ int main()
             if (erleC < 30.0) { std::printf ("  FAIL: clean re-converged ERLE < 30 dB\n"); ++failures; }
             if (outDist - micSer < 8.0) { std::printf ("  FAIL: clean double-talk improvement < 8 dB\n"); ++failures; }
         }
+    }
+
+    // talk spurts with an echo delay that jumps at each onset (e.g. a voice-chat app restarting its
+    // playback stream between spurts): the learned filter must be shifted, not re-learned
+    {
+        struct Spurt { double from, to; int delay; };
+        const Spurt spurts[] = { { 0.0, 6.0, 0 }, { 7.0, 9.5, 240 }, { 10.5, 13.0, 96 }, { 14.0, 16.0, 600 } };
+        std::vector<float> ref ((size_t) bEnd, 0.0f), m ((size_t) bEnd, 0.0f);
+        for (int i = 0; i < bEnd; ++i) m[(size_t) i] = 1.0e-4f * noise (rng);
+        for (const auto& sp : spurts)
+            for (int i = (int) (sp.from * kSr); i < (int) (sp.to * kSr); ++i)
+            {
+                ref[(size_t) i] = farEnd[(size_t) i];
+                if (i - sp.delay >= 0) m[(size_t) i] += echo1[(size_t) (i - sp.delay)];
+            }
+
+        AecCore aec;
+        aec.prepare (kSr, 500.0f, AecCore::blockSizeFor (kSr, false));
+        AecSettings s;
+        s.mode = OutputMode::LinearOnly;
+        aec.setSettings (s);
+        std::vector<float> out ((size_t) bEnd, 0.0f);
+        const int L = aec.getBlockSize();
+        for (int i = 0; i + L <= bEnd; i += L)
+            aec.processBlock (&ref[(size_t) i], &m[(size_t) i], &out[(size_t) i]);
+
+        std::printf ("[Talk spurts, echo delay jumps]\n");
+        double worst = 1e9;
+        for (int k = 1; k < 4; ++k)
+        {
+            const int a = (int) ((spurts[k].from + 0.5) * kSr), b = (int) (spurts[k].to * kSr) - 2 * L;
+            const double e = db (power (m, a - L, b - L) / power (out, a, b));
+            worst = std::min (worst, e);
+            std::printf ("  spurt %d (delay %+5.1f ms): ERLE from 0.5 s after onset %6.1f dB\n", k, spurts[k].delay * 1000.0 / kSr, e);
+        }
+        std::printf ("  jumps followed: %d\n", aec.getRealignCount());
+        if (worst < 15.0) { std::printf ("  FAIL: ERLE after a delay jump < 15 dB\n"); ++failures; }
+        if (aec.getRealignCount() < 3) { std::printf ("  FAIL: delay jumps not followed\n"); ++failures; }
     }
 
     // pass-through sanity: with no reference the output must equal the (delayed) mic
