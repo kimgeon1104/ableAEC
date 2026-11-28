@@ -6,13 +6,20 @@
 //   4. with the sidechain bus disabled the plugin is a transparent (delayed) pass-through
 //
 // usage: AbleAecHostTest <path/to/AbleAEC.vst3>
+//        AbleAecHostTest <path/to/AbleAEC.vst3> --bench [--block 96] [--seconds 10] [--mono-mic]
+//                        [--latency quality|low] [--echo] [--repeat 3]
+//   --bench measures the time of each processBlock call like a DAW at a small buffer size:
+//   by default independent white noise (+-0.1) on all four inputs, as in the performance report.
 
 #include "SimSignals.h"
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <memory>
+#include <random>
 
 using namespace sim;
 
@@ -82,6 +89,85 @@ Result run (juce::AudioPluginInstance& plugin, const std::vector<float>& mic, co
     return r;
 }
 
+// Per-call timing at a small host block size. Returns 0, or 1 on bad arguments.
+int bench (juce::AudioPluginInstance& plugin, int argc, char** argv)
+{
+    int block = 96, repeat = 3;
+    double seconds = 10.0;
+    bool monoMic = false, echo = false;
+    int latencyMode = 0;
+    for (int i = 3; i < argc; ++i)
+    {
+        const juce::String a (argv[i]);
+        if (a == "--block" && i + 1 < argc) block = juce::String (argv[++i]).getIntValue();
+        else if (a == "--seconds" && i + 1 < argc) seconds = juce::String (argv[++i]).getDoubleValue();
+        else if (a == "--repeat" && i + 1 < argc) repeat = juce::String (argv[++i]).getIntValue();
+        else if (a == "--mono-mic") monoMic = true;
+        else if (a == "--echo") echo = true;
+        else if (a == "--latency" && i + 1 < argc) latencyMode = juce::String (argv[++i]) == "low" ? 1 : 0;
+        else { std::printf ("unknown bench option %s\n", argv[i]); return 1; }
+    }
+
+    auto layout = plugin.getBusesLayout();
+    layout.inputBuses.getReference (1) = juce::AudioChannelSet::stereo();
+    plugin.setBusesLayout (layout);
+    setChoice (plugin, "Latency", latencyMode);
+    setChoice (plugin, "Output", 0);
+
+    const int total = (int) (seconds * kSr);
+    std::vector<std::vector<float>> in (4, std::vector<float> ((size_t) total));
+    std::mt19937 rng (42);
+    std::uniform_real_distribution<float> u (-0.1f, 0.1f);
+    if (echo) // speech-like stereo playback, its echo + a little noise on the mic
+    {
+        in[2] = speechLike (total, 11);
+        in[3] = speechLike (total, 12);
+        const auto eL = convolve (in[2], roomImpulse (18.0, 0.12, 5), 0, total);
+        const auto eR = convolve (in[3], roomImpulse (24.0, 0.12, 6), 0, total);
+        for (int i = 0; i < total; ++i) in[0][(size_t) i] = eL[(size_t) i] + eR[(size_t) i] + 0.001f * u (rng);
+        in[1] = in[0];
+    }
+    else
+        for (auto& ch : in)
+            for (auto& v : ch) v = u (rng);
+    if (monoMic) in[1] = in[0];
+
+    const double budgetUs = 1.0e6 * block / kSr;
+    std::printf ("bench: %d-sample blocks (%.2f ms budget), %.0f s, %s mic, %s input, %s latency\n", block, budgetUs / 1000.0,
+                 seconds, monoMic || echo ? "mono (L=R)" : "stereo (L!=R)", echo ? "echo" : "noise",
+                 latencyMode == 0 ? "quality" : "low");
+    const int numCh = juce::jmax (plugin.getTotalNumInputChannels(), plugin.getTotalNumOutputChannels());
+    juce::AudioBuffer<float> buf (numCh, block);
+    juce::MidiBuffer midi;
+    for (int rep = 0; rep < repeat; ++rep)
+    {
+        plugin.prepareToPlay (kSr, block);
+        std::vector<double> t;
+        t.reserve ((size_t) (total / block + 1));
+        for (int pos = 0; pos + block <= total; pos += block)
+        {
+            for (int c = 0; c < 4 && c < numCh; ++c) buf.copyFrom (c, 0, in[(size_t) c].data() + pos, block);
+            const auto t0 = std::chrono::steady_clock::now();
+            plugin.processBlock (buf, midi);
+            const auto t1 = std::chrono::steady_clock::now();
+            t.push_back (std::chrono::duration<double, std::micro> (t1 - t0).count());
+        }
+        plugin.releaseResources();
+        const double first = t.front();
+        double sum = 0;
+        for (double v : t) sum += v;
+        const double avg = sum / (double) t.size();
+        std::vector<double> rest (t.begin() + 1, t.end());
+        std::sort (rest.begin(), rest.end());
+        const double p99 = rest[(size_t) (0.99 * (double) (rest.size() - 1))];
+        const double p999 = rest[(size_t) (0.999 * (double) (rest.size() - 1))];
+        const double mx = rest.back();
+        std::printf ("  run %d: avg %7.1f us (%5.1f %%) | p99 %7.1f us (%5.1f %%) | p99.9 %7.1f us | max %7.1f us (%5.1f %%) | first block %7.1f us\n",
+                     rep + 1, avg, 100.0 * avg / budgetUs, p99, 100.0 * p99 / budgetUs, p999, mx, 100.0 * mx / budgetUs, first);
+    }
+    return 0;
+}
+
 double pw (const std::vector<float>& v, int a, int b)
 {
     double s = 0;
@@ -125,6 +211,13 @@ int main (int argc, char** argv)
     check (plugin->checkBusesLayoutSupported (layout), "stereo main + stereo sidechain layout supported");
     check (plugin->setBusesLayout (layout), "layout applied");
     if (failures > 0) return 1;
+
+    if (argc >= 3 && juce::String (argv[2]) == "--bench")
+    {
+        const int rc = bench (*plugin, argc, argv);
+        plugin.reset();
+        return rc;
+    }
 
     // signals: 14 s, two different loudspeaker signals (stereo backing) through two room paths
     const int total = (int) (14 * kSr);
